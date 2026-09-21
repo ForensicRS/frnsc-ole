@@ -1,0 +1,9 @@
+/target
+/Cargo.lock
+/.cargo
+/.vscode
+
+# Fixture-skip pattern: tests that need these self-skip when the files are absent (see
+# AGENTS.md). Never commit them -- one is a 7.5 MB proprietary installer, and a macro-bearing
+# document would also risk AV/GitHub-scanner false positives on the repo itself.
+/artifacts

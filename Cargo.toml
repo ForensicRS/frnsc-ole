@@ -1,0 +1,17 @@
+[package]
+name = "frnsc-ole"
+version = "0.1.0"
+authors = ["Samuel Garcés Marín <samuel.garces@protonmail.com>"]
+keywords = ["forensic", "ole", "parser", "cfbf", "cybersecurity"]
+categories = ["parsing"]
+description = "Implements the StructuredObject/FormatFactory traits from forensic-rs to read OLE Compound File Binary Format (CFBF) containers (.msi, legacy .doc/.xls, ...)"
+license = "MIT"
+edition = "2024"
+rust-version = "1.85"
+repository = "https://github.com/ForensicRS/frnsc-ole"
+exclude = ["/artifacts"]
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+forensic-rs = "0.14"
