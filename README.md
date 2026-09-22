@@ -7,18 +7,24 @@
 
 Reads OLE Compound File Binary Format (CFBF) containers — `.msi`, legacy Office documents
 (`.doc`/`.xls`/`.ppt`), Outlook `.msg`, Visio/Publisher files, and other structured-storage
-formats — and, on top of the container, extracts document metadata, VBA macro source, embedded
-objects, and (for legacy Word documents) plain text.
+formats — and, on top of the container, extracts document metadata and format identification
+(with VBA macro source, embedded objects, and Word plain text still to come).
 
-**Implements:** `StructuredObject` + `FormatFactory` (`Mounted::Object`) for the CFBF container
-layer, and `ArtifactParserFactory` + a bridge `ProviderHook` so the typed document contents reach
-a `TriagePipeline` run or an interactive evidence browser without a caller writing that plumbing
-by hand. Behind the optional `capabilities` feature, it also ships a set of `ForensicTool`s for
-direct MCP-style invocation.
+**Implements:**
+- `forensic_rs::FileSystem` + `forensic_rs::traits::vfs::PathAttributes` (via [`OleFileSystem`],
+  mounted by `OleFileSystemFactory`) — **the primary surface.** A CFBF container's storages
+  become directories and streams become files, so `walk`, `glob`, the bridge's `VfsProvider`,
+  MCP resource browsing, and `AuthorizedVirtualFileSystem` policy enforcement all work over a
+  document's internals with zero OLE-specific code anywhere downstream. Per-path document facts
+  (author, format, allocation/slack, ...) ride the `PathAttributes` capability probe rather than
+  an inherent method, so any generic tool holding `dyn FileSystem` can reach them.
+- `StructuredObject` + `FormatFactory` (`Mounted::Object`, via `OleFormatFactory`) — the
+  embedding relationship, for an OLE document found nested inside another format. Kept alongside
+  the `FileSystem` view but no longer the primary way to reach a document's contents.
 
 Built on [`forensic-rs`](https://github.com/ForensicRS/forensic-rs), which decouples forensic
-analysis logic from data access: code written against this crate's trait implementations reads
-the same `.doc` whether it came from a live path, a raw disk image, a triage collection, a nested
+analysis logic from data access: code written against `FileSystem`/`PathAttributes` reads the
+same `.doc` whether it came from a live path, a raw disk image, a triage collection, a nested
 ZIP a `MountResolver` already unpacked, or an `InMemoryVirtualFileSystem` in a test — this crate
 is never named in that analysis code.
 
@@ -26,116 +32,89 @@ is never named in that analysis code.
 
 - The whole container is held in memory (`OleFile::parse(Vec<u8>)`); CFBF containers in forensic
   practice are file-sized, not volume-sized, so this trades a bounded amount of memory for never
-  re-seeking the original source while resolving sector chains. `OleFormatFactory::mount` refuses
-  (rather than silently truncating) a file larger than
-  `Limits::materialize_in_memory_limit`, and does **not** fall back to a spilled/streaming
-  reader — see `AGENTS.md` for why that would defeat the budget it's enforcing.
+  re-seeking the original source while resolving sector chains. Both factories refuse (rather
+  than silently truncating) a file larger than `Limits::materialize_in_memory_limit`, and do
+  **not** fall back to a spilled/streaming reader — see `AGENTS.md` for why that would defeat
+  the budget it's enforcing.
 - Only little-endian MS-CFB v3 (512-byte sectors) and v4 (4096-byte sectors) are supported, with
   64-byte mini sectors — the combination every real-world writer produces.
 - Read-only. This crate never writes to evidence.
-- **Facts only, no scoring.** This crate extracts primitives — macro source, embedded files,
-  property values, document text, and stomping *evidence* — and deliberately ships no malware
+- A directory entry name containing an [MS-CFB]-forbidden character (`/ \ : !`) or equal to
+  `.`/`..` is excluded from `OleFileSystem`'s surface (never listed, never opened) rather than
+  rejecting the whole mount — see `OleFileSystem::name_anomalies()` and `AGENTS.md`.
+- **Facts only, no scoring.** This crate extracts primitives — property values, and (as later
+  phases land) macro source, embedded files, document text — and deliberately ships no malware
   detection, keyword matching, or verdicts. Build that downstream, on top of what this crate
   surfaces.
 
 ## Usage
 
-Directly, from bytes you already have:
+As a `FileSystem`, from bytes you already have:
 
 ```rust
-use frnsc_ole::OleFile;
+use forensic_rs::prelude::*;
+use frnsc_ole::{OleFile, OleFileSystem};
 
 let data = std::fs::read("Sample.doc")?;
-let ole = OleFile::parse(data)?;
-for name in ole.stream_names() {
-    println!("{name}: {} bytes", ole.read_stream(name)?.len());
+let fs = OleFileSystem::new(OleFile::parse(data)?);
+
+for entry in fs.walk(FPath::new(""), &Default::default()) {
+    let entry = entry?;
+    println!("{}: {:?} bytes", entry.path, entry.metadata.map(|m| m.size));
 }
 ```
 
-Through a `MountResolver`, so a `.doc` found anywhere in evidence is sniffed and opened
-automatically:
+Through a `MountResolver`, so a `.doc` found anywhere in evidence is sniffed and mounted
+automatically as a walkable `FileSystem`:
 
 ```rust
 use forensic_rs::prelude::*;
-use frnsc_ole::OleFormatFactory;
+use frnsc_ole::OleFileSystemFactory;
 
 let resolver = MountResolver::builder()
-    .factory(std::sync::Arc::new(OleFormatFactory::new()))
+    .factory(std::sync::Arc::new(OleFileSystemFactory::new()))
     .build();
 ```
 
-Through a `TriagePipeline`, so every OLE document anywhere under a VFS root is discovered and
-emitted as records:
+Per-path facts (document author, per-stream allocation/slack, ...), via `PathAttributes` —
+reachable without ever naming this crate, from any `dyn FileSystem`:
 
 ```rust
-use forensic_rs::prelude::*;
-use frnsc_ole::OleParserFactory;
-
-let pipeline = TriagePipeline::builder()
-    .context(context)
-    .parser(std::sync::Arc::new(OleParserFactory::new()))
-    .sink(Box::new(sink))
-    .build()?;
+if let Some(attrs) = fs.as_attributes() {
+    let root_facts = attrs.attributes(FPath::new(""))?;
+    println!("{:?}", root_facts.get(&Text::Borrowed("ole.author")));
+}
 ```
 
-## Pipeline integration
+## Field naming contract
 
-`OleParserFactory` (`ArtifactParserFactory`, descriptor id `"document.ole"`) walks a configured
-`FileSystem` looking for OLE documents (by extension, by content-sniffing the 8-byte CFBF magic,
-or both — see `DiscoveryMode` below) and emits one or more `ForensicData` records per document.
+Every `PathAttributes` key follows `"ole.<scope>.<field>"`, and **a key is omitted, never
+zero-filled, when the underlying value is absent** — an absent `ole.author` means the property
+set had no author, not an empty string. Booleans are encoded as `Field::U64(0|1)` (`Field` has
+no boolean variant).
 
-**Field naming contract**, followed by every record this crate emits:
-
-- Every field key is `"ole.<record>.<field>"`.
-- Every record carries a shared `ole.record_type` discriminator and a shared `ole.document.path`
-  (the document's VFS path — the join key across a document's records).
-- Every record carries a shared `ole.timestamp`, so one `TimelineSink`/`JsonlTimelineSink` works
-  uniformly over this parser's whole output, regardless of record type.
-- **A key is omitted, never zero-filled, when the underlying value is absent.** An absent
-  `ole.document.author` means the property set had no author, not an empty string. Booleans are
-  encoded as `Field::U64(0|1)` (`Field` has no boolean variant).
-- Record types: `Document` (one per discovered file), `Stream` (one per directory entry),
-  `VbaModule` (one per macro module), `EmbeddedObject` (one per embedded object), `ParseFailure`
-  (a document that looked like CFBF and would not parse — this is a *record*, not a pipeline
-  error, so one bad file never aborts a whole-disk run).
-
-**`DiscoveryMode`** trades cost for coverage: `ByExtension` (default) only opens files whose name
-matches a known OLE-bearing extension; `ByContent` magic-sniffs every file in the configured size
-band, which is what catches a *renamed* document (a real adversarial case) but costs one `open()`
-per candidate file on a whole disk image. Choose deliberately via `DiscoveryConfig`.
-
-## Bridge integration
-
-`OleHook` (`ProviderHook`) matches any file whose content starts with the CFBF magic and exposes
-a virtual `[ole]` namespace under it: `metadata`, `streams`, `macros`, `embedded`, `text`, each
-paginated. It holds no parsed state between calls — every read re-derives from the underlying
-bytes — so it is safe to attach to a `VfsProvider` over an entire evidence tree.
-
-## MCP capability integration (`--features capabilities`)
-
-Six read-only `ForensicTool`s: `ole.inspect`, `ole.list_streams`, `ole.read_stream`,
-`ole.extract_macros`, `ole.extract_text`, `ole.extract_embedded`. Every invocation is
-authorized per-call against the caller's `AccessContext`; a denied path returns
-`CapabilityError::not_found()`, never `AccessDenied` — indistinguishable from a genuinely
-missing path, matching the framework's own capability-hiding rule.
+- The filesystem **root** carries the whole document-level map: format identification
+  (`ole.document_type`), property-set metadata (`ole.author`, `ole.title`, `ole.created`, ...),
+  encryption state (`ole.encryption`), and container structure (`ole.stream_count`, ...).
+- A **storage** path carries its own identity (`ole.storage.path`, `.name`, `.clsid`, `.created`,
+  `.modified`, `.child_count`).
+- A **stream** path carries its own identity plus allocation facts
+  (`ole.stream.size`, `.allocated_size`, `.slack_size`, `.truncated`, `.in_mini_fat`).
 
 ## Examples
 
-Run any of these with `cargo run --example <name>` (`mcp_ole_tools` additionally needs
-`--features capabilities`):
+Run with `cargo run --example <name>`:
 
-- `inspect_ole` — parses a fixture and prints its full directory tree, MACB times, and
-  document metadata.
-- `pipeline_ole` — runs `OleParserFactory` through a real `TriagePipeline`.
-- `bridge_ole` — browses a document through `OleHook` via a `BridgeClient`.
-- `mcp_ole_tools` — registers and invokes the `ForensicTool`s directly.
+- `browse_ole` — mounts a document as an `OleFileSystem` and demonstrates `walk`, `glob`,
+  `PathAttributes`, and the name-anomaly report.
+- `inspect_ole` — the container-level view: parses a fixture and prints its full directory tree,
+  MACB times, and `StructuredObject::attributes()`.
 
 ## Development
 
 ```sh
 cargo test
-cargo test --all-features
-cargo clippy --all-targets --all-features -- -D warnings
+cargo clippy --all-targets -- -D warnings
 ```
 
 Integration tests under `tests/` follow the fixture-skip pattern: a fixture normally lives at

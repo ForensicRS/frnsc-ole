@@ -1,9 +1,18 @@
-//! `forensic_rs::traits::format::FormatFactory` implementation — sniffs and mounts a CFBF file
-//! as a [`Mounted::Object`], structured like `frnsc-hive`'s `HiveFormatFactory` (probe restores
-//! the stream position on every path including an error return; mount hands back an
-//! `Arc`-wrapped reader), plus the two `EseFormatFactory`-style hardenings `frnsc-esedb` already
-//! applies: a `Limits::materialize_in_memory_limit` check before reading, and `.with_path(..)`
-//! on every parse error.
+//! `forensic_rs::traits::format::FormatFactory` implementations for CFBF: [`OleFileSystemFactory`]
+//! (yields `Mounted::FileSystem` -- this crate's primary surface, see `AGENTS.md`) and
+//! [`OleFormatFactory`] (yields `Mounted::Object`, for the embedding relationship). Both share
+//! the same probe/mount logic ([`probe_cfbf`]/[`mount_cfbf`]) so the limit-aware read and the
+//! `.with_path(..)` error-context attachment each have exactly one implementation.
+//!
+//! **Naming and the resolver's tie-break.** `MountResolver::resolve` picks the highest
+//! [`ProbeScore`] and, on a tie, the lexicographically smallest `name()` -- deterministic,
+//! independent of registration order. Both factories score identically on the same bytes (they
+//! share `probe_cfbf`), so `name()` alone decides which one an *untargeted* resolve (`want:
+//! None`) returns: `OleFileSystemFactory` is named `"frnsc-ole"` and `OleFormatFactory` is named
+//! `"frnsc-ole-object"`, so the plain name sorts first and the `FileSystem` mount wins when a
+//! caller hasn't asked for a specific kind -- encoding "`FileSystem` is primary" in the one
+//! mechanism the resolver offers. A caller that wants the `Object` view specifically must pass
+//! `want: Some(MountKind::Object)`.
 
 use std::io::{Read, SeekFrom};
 use std::sync::Arc;
@@ -11,9 +20,44 @@ use std::sync::Arc;
 use forensic_rs::prelude::*;
 
 use crate::consts::OLE_SIGNATURE;
+use crate::filesystem::OleFileSystem;
 use crate::header::Header;
 use crate::ole::OleFile;
 
+/// Mounts a CFBF file as a [`forensic_rs::FileSystem`] (storages are directories, streams are
+/// files) -- the primary way to reach an OLE document's contents. See the module doc for the
+/// naming/tie-break story with [`OleFormatFactory`].
+#[derive(Debug, Default, Clone, Copy)]
+pub struct OleFileSystemFactory;
+
+impl OleFileSystemFactory {
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl FormatFactory for OleFileSystemFactory {
+    fn name(&self) -> &'static str {
+        "frnsc-ole"
+    }
+
+    fn yields(&self) -> MountKind {
+        MountKind::FileSystem
+    }
+
+    fn probe(&self, file: &mut dyn VirtualFile, ctx: &MountContext<'_>) -> ForensicResult<ProbeScore> {
+        probe_cfbf(file, ctx)
+    }
+
+    fn mount(&self, file: Box<dyn VirtualFile>, ctx: &MountContext<'_>) -> ForensicResult<Mounted> {
+        let ole = mount_cfbf(file, ctx)?;
+        Ok(Mounted::FileSystem(Arc::new(OleFileSystem::new(ole))))
+    }
+}
+
+/// Mounts a CFBF file as a [`StructuredObject`] -- the embedding relationship (an OLE document
+/// found as a child of another format). See [`OleFileSystemFactory`] for the primary,
+/// `FileSystem`-shaped surface.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct OleFormatFactory;
 
@@ -25,61 +69,19 @@ impl OleFormatFactory {
 
 impl FormatFactory for OleFormatFactory {
     fn name(&self) -> &'static str {
-        "frnsc-ole"
+        "frnsc-ole-object"
     }
 
     fn yields(&self) -> MountKind {
         MountKind::Object
     }
 
-    /// Checks the 8-byte CFBF magic, and — if a full 512-byte header is available — whether it
-    /// is structurally valid ([`Header::parse`] already validates byte order, sector shift, and
-    /// the major-version/sector-size cross-check). Per [`FormatFactory::probe`]'s contract,
-    /// restores the stream position before returning on every path, including an error return.
-    fn probe(&self, file: &mut dyn VirtualFile, _ctx: &MountContext<'_>) -> ForensicResult<ProbeScore> {
-        let initial_pos = file.stream_position().unwrap_or(0);
-        let result = probe_inner(file);
-        file.seek(SeekFrom::Start(initial_pos))
-            .map_err(|e| ForensicError::io_error_with_source(e, "restoring stream position after probing"))?;
-        result
+    fn probe(&self, file: &mut dyn VirtualFile, ctx: &MountContext<'_>) -> ForensicResult<ProbeScore> {
+        probe_cfbf(file, ctx)
     }
 
-    /// Reads the whole file (bounded by [`Limits::materialize_in_memory_limit`]) and parses it
-    /// into an [`OleFile`], wrapped as `Mounted::Object`.
-    ///
-    /// Refuses rather than spilling when the file is too large: `OleFile` is `data: Vec<u8>` by
-    /// construction, with every sector chain resolved by slicing that buffer, and a
-    /// [`MemorySpillStore`](forensic_rs::core::limits::MemorySpillStore)-backed
-    /// [`VirtualFile`] cannot feed `OleFile::parse`'s `Vec<u8>` without being read back into
-    /// memory in full first — which would defeat the budget it's supposedly enforcing. An
-    /// honest refusal, naming the observed size and the limit, is the correct answer until
-    /// `OleFile` itself grows a streaming mode.
-    fn mount(&self, mut file: Box<dyn VirtualFile>, ctx: &MountContext<'_>) -> ForensicResult<Mounted> {
-        let limit = ctx.limits().materialize_in_memory_limit as u64;
-
-        // Cheap early-out when the backend can report size without reading. Not authoritative
-        // on its own -- a backend may report 0 or a stale value -- so the `take` below is what
-        // actually enforces the budget.
-        if let Ok(meta) = file.metadata() {
-            if meta.size > limit {
-                return Err(too_large(meta.size, limit).with_path(ctx.locator().to_string()));
-            }
-        }
-
-        file.seek(SeekFrom::Start(0))
-            .map_err(|e| ForensicError::io_error_with_source(e, "seeking to start before mounting"))?;
-        let mut data = Vec::new();
-        // Read at most `limit + 1` bytes: enough to prove "over the limit" without ever
-        // allocating past it, and without trusting the (possibly wrong) reported size for
-        // anything but the cheap early-out above.
-        Read::take(&mut *file, limit + 1)
-            .read_to_end(&mut data)
-            .map_err(|e| ForensicError::io_error_with_source(e, "reading OLE container into memory"))?;
-        if data.len() as u64 > limit {
-            return Err(too_large(data.len() as u64, limit).with_path(ctx.locator().to_string()));
-        }
-
-        let ole = OleFile::parse(data).map_err(|e| e.with_path(ctx.locator().to_string()))?;
+    fn mount(&self, file: Box<dyn VirtualFile>, ctx: &MountContext<'_>) -> ForensicResult<Mounted> {
+        let ole = mount_cfbf(file, ctx)?;
         Ok(Mounted::Object(Arc::new(ole)))
     }
 }
@@ -89,6 +91,18 @@ fn too_large(observed: u64, limit: u64) -> ForensicError {
         "frnsc-ole",
         format!("CFBF container is {observed} bytes, exceeding the {limit}-byte in-memory materialization limit"),
     )
+}
+
+/// Checks the 8-byte CFBF magic, and — if a full 512-byte header is available — whether it is
+/// structurally valid ([`Header::parse`] already validates byte order, sector shift, and the
+/// major-version/sector-size cross-check). Per [`FormatFactory::probe`]'s contract, restores the
+/// stream position before returning on every path, including an error return.
+fn probe_cfbf(file: &mut dyn VirtualFile, _ctx: &MountContext<'_>) -> ForensicResult<ProbeScore> {
+    let initial_pos = file.stream_position().unwrap_or(0);
+    let result = probe_inner(file);
+    file.seek(SeekFrom::Start(initial_pos))
+        .map_err(|e| ForensicError::io_error_with_source(e, "restoring stream position after probing"))?;
+    result
 }
 
 fn probe_inner(file: &mut dyn VirtualFile) -> ForensicResult<ProbeScore> {
@@ -103,6 +117,44 @@ fn probe_inner(file: &mut dyn VirtualFile) -> ForensicResult<ProbeScore> {
     // Magic alone can collide; a header that also passes full structural validation
     // (byte order, sector shift, mini-sector shift, the v3/512 cross-check) is unambiguous.
     Ok(if Header::parse(&head).is_ok() { ProbeScore::Exact } else { ProbeScore::Strong })
+}
+
+/// Reads the whole file (bounded by [`Limits::materialize_in_memory_limit`]) and parses it into
+/// an [`OleFile`].
+///
+/// Refuses rather than spilling when the file is too large: `OleFile` is `data: Vec<u8>` by
+/// construction, with every sector chain resolved by slicing that buffer, and a
+/// [`MemorySpillStore`](forensic_rs::core::limits::MemorySpillStore)-backed [`VirtualFile`]
+/// cannot feed `OleFile::parse`'s `Vec<u8>` without being read back into memory in full first —
+/// which would defeat the budget it's supposedly enforcing. An honest refusal, naming the
+/// observed size and the limit, is the correct answer until `OleFile` itself grows a streaming
+/// mode.
+fn mount_cfbf(mut file: Box<dyn VirtualFile>, ctx: &MountContext<'_>) -> ForensicResult<OleFile> {
+    let limit = ctx.limits().materialize_in_memory_limit as u64;
+
+    // Cheap early-out when the backend can report size without reading. Not authoritative
+    // on its own -- a backend may report 0 or a stale value -- so the `take` below is what
+    // actually enforces the budget.
+    if let Ok(meta) = file.metadata() {
+        if meta.size > limit {
+            return Err(too_large(meta.size, limit).with_path(ctx.locator().to_string()));
+        }
+    }
+
+    file.seek(SeekFrom::Start(0))
+        .map_err(|e| ForensicError::io_error_with_source(e, "seeking to start before mounting"))?;
+    let mut data = Vec::new();
+    // Read at most `limit + 1` bytes: enough to prove "over the limit" without ever
+    // allocating past it, and without trusting the (possibly wrong) reported size for
+    // anything but the cheap early-out above.
+    Read::take(&mut *file, limit + 1)
+        .read_to_end(&mut data)
+        .map_err(|e| ForensicError::io_error_with_source(e, "reading OLE container into memory"))?;
+    if data.len() as u64 > limit {
+        return Err(too_large(data.len() as u64, limit).with_path(ctx.locator().to_string()));
+    }
+
+    OleFile::parse(data).map_err(|e| e.with_path(ctx.locator().to_string()))
 }
 
 #[cfg(test)]
@@ -231,5 +283,65 @@ mod tests {
             Err(e) => e.to_string(),
         };
         assert!(message.contains("16"), "error should name the limit: {message}");
+    }
+
+    #[test]
+    fn filesystem_factory_yields_a_walkable_filesystem() {
+        let bytes = crate::ole::tests_support::minimal_ole_bytes();
+        let fs: Arc<dyn FileSystem> = StdArc::new(InMemoryVirtualFileSystem::new().with_file("ole_file", bytes));
+        let file = fs.open(FPath::new("ole_file")).unwrap();
+        let locator = EvidenceLocator::root().push(LocatorSegment::Path(FPathBuf::new()));
+        let limits = Limits::default();
+        let spill = MemorySpillStore::default();
+        let cancellation = forensic_rs::bridge::CancellationToken::default();
+        let ctx = probe_ctx(&fs, &locator, &limits, &spill, &cancellation);
+
+        let factory = OleFileSystemFactory::new();
+        assert_eq!(factory.yields(), MountKind::FileSystem);
+        let mounted = factory.mount(file, &ctx).unwrap();
+        let inner_fs = mounted.as_file_system().expect("factory declares MountKind::FileSystem");
+        assert_eq!(inner_fs.read_dir(FPath::new("")).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn both_factories_score_the_same_bytes_identically() {
+        let bytes = valid_header_bytes();
+        let fs: Arc<dyn FileSystem> = StdArc::new(InMemoryVirtualFileSystem::new().with_file("ole_file", bytes));
+        let locator = EvidenceLocator::root().push(LocatorSegment::Path(FPathBuf::new()));
+        let limits = Limits::default();
+        let spill = MemorySpillStore::default();
+        let cancellation = forensic_rs::bridge::CancellationToken::default();
+        let ctx = probe_ctx(&fs, &locator, &limits, &spill, &cancellation);
+
+        let mut a = fs.open(FPath::new("ole_file")).unwrap();
+        let mut b = fs.open(FPath::new("ole_file")).unwrap();
+        let score_fs = OleFileSystemFactory::new().probe(a.as_mut(), &ctx).unwrap();
+        let score_obj = OleFormatFactory::new().probe(b.as_mut(), &ctx).unwrap();
+        assert_eq!(score_fs, score_obj);
+    }
+
+    /// Pins the naming decision the module doc describes: an untargeted resolve must
+    /// deterministically prefer the `FileSystem` mount, in either registration order.
+    #[test]
+    fn an_untargeted_resolve_prefers_the_filesystem_mount_regardless_of_registration_order() {
+        let bytes = crate::ole::tests_support::minimal_ole_bytes();
+        let cancellation = forensic_rs::bridge::CancellationToken::default();
+
+        for reversed in [false, true] {
+            let fs: Arc<dyn FileSystem> = StdArc::new(InMemoryVirtualFileSystem::new().with_file("ole_file", bytes.clone()));
+            let file = fs.open(FPath::new("ole_file")).unwrap();
+            let locator = EvidenceLocator::root().push(LocatorSegment::Path(FPathBuf::from("ole_file")));
+
+            let mut builder = MountResolver::builder();
+            builder = if reversed {
+                builder.factory(Arc::new(OleFormatFactory::new())).factory(Arc::new(OleFileSystemFactory::new()))
+            } else {
+                builder.factory(Arc::new(OleFileSystemFactory::new())).factory(Arc::new(OleFormatFactory::new()))
+            };
+            let resolver = builder.build();
+
+            let mounted = resolver.resolve(&fs, &locator, file, None, &cancellation).unwrap();
+            assert!(mounted.as_file_system().is_some(), "reversed={reversed}: expected the FileSystem mount to win");
+        }
     }
 }

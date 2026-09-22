@@ -123,6 +123,13 @@ impl OleFile {
         self.paths.get(path).map(|&idx| &self.entries[idx])
     }
 
+    /// Looks up an entry's directory index by its full path (stream or storage). The index
+    /// twin of [`Self::entry`], for a caller (e.g. [`crate::filesystem::OleFileSystem`]) that
+    /// needs to cross-reference other per-index bookkeeping it keeps outside `OleFile` itself.
+    pub fn path_index(&self, path: &str) -> Option<usize> {
+        self.paths.get(path).copied()
+    }
+
     /// The root storage's own entry (always present — [`Self::parse`] rejects an empty
     /// directory stream).
     pub fn root_entry(&self) -> &DirectoryEntry {
@@ -199,6 +206,16 @@ impl OleFile {
     fn read_stream_by_index(&self, idx: usize) -> ForensicResult<(Vec<u8>, u64)> {
         let entry = &self.entries[idx];
         let declared_size = entry.stream_size as usize;
+        // [MS-CFB] 2.6.1 mandates NOSTREAM/ENDOFCHAIN as the starting sector for a genuinely
+        // empty stream, which `follow_chain`'s own early exit already handles -- but a
+        // non-compliant writer (or a hand-built fixture) can leave `start_sector` at some other
+        // value even when the declared size is 0. Short-circuit on declared size alone rather
+        // than trusting `start_sector` to be well-formed: there is nothing to read regardless of
+        // what it says, and walking it needlessly risks an out-of-range/cycle error over a
+        // stream that is, by its own declared size, empty.
+        if declared_size == 0 {
+            return Ok((Vec::new(), 0));
+        }
         let raw = if entry.stream_size as usize >= self.header.mini_stream_cutoff_size {
             fat::read_stream_chain(&self.data, &self.fat, entry.start_sector, self.header.sector_size)?
         } else {
@@ -215,6 +232,70 @@ impl OleFile {
     /// null (no class assigned).
     pub fn root_clsid(&self) -> Option<String> {
         self.entries[0].clsid_string()
+    }
+
+    /// The validated header this container was parsed from.
+    pub fn header(&self) -> &Header {
+        &self.header
+    }
+
+    /// A stream's real on-disk allocation in bytes (its sector- or mini-sector-rounded chain
+    /// length), **without** materializing the stream's content -- unlike
+    /// [`Self::read_stream_with_allocation`], which must read every sector to return the bytes
+    /// anyway. This is what lets a per-entry `metadata()` call (as `FileSystem::metadata` is,
+    /// once per directory entry during a walk) report allocation/slack honestly without making
+    /// the walk itself O(total stream bytes).
+    pub fn stream_allocation(&self, path: &str) -> ForensicResult<u64> {
+        let &idx = self
+            .paths
+            .get(path)
+            .ok_or_else(|| ForensicError::missing_data("ole_stream", CompactString::from(format!("no stream at '{path}'"))))?;
+        self.stream_allocation_by_index(idx)
+    }
+
+    pub(crate) fn stream_allocation_by_index(&self, idx: usize) -> ForensicResult<u64> {
+        let entry = &self.entries[idx];
+        // Same short-circuit as `read_stream_by_index`, and for the same reason: a declared
+        // size of 0 means nothing to walk, regardless of what `start_sector` says.
+        if entry.stream_size == 0 {
+            return Ok(0);
+        }
+        if entry.stream_size as usize >= self.header.mini_stream_cutoff_size {
+            let sectors = crate::chain::count_chain(&self.fat, entry.start_sector)?;
+            Ok(sectors * self.header.sector_size as u64)
+        } else {
+            let sectors = crate::chain::count_chain(&self.mini_fat, entry.start_sector)?;
+            Ok(sectors * crate::consts::MINI_SECTOR_SIZE as u64)
+        }
+    }
+
+    /// Lazy, subtree-scoped twin of [`Self::children_of`]: `children_of` re-scans every path in
+    /// the container on each call (O(total paths)), which makes a full walk over a large,
+    /// possibly adversarial container O(n²). For a non-root `storage`, this walks only the
+    /// `BTreeMap` range under it instead, borrowing `&self` rather than collecting. The root
+    /// case (`storage == ""`) has no such prefix to range on -- top-level entries are bare names
+    /// with nothing distinguishing their sort position from anything nested deeper -- so it
+    /// still scans every path, exactly as `children_of("")` already does; no regression, just no
+    /// extra win there.
+    pub fn children_iter(&self, storage: &str) -> impl Iterator<Item = (&str, ObjectType)> {
+        // Every key under `storage` starts with `"{storage}/"`; `/` (0x2F) sorts immediately
+        // below `0` (0x30), so `"{storage}/".."{storage}0"` is a tight, always-correct bound
+        // regardless of what characters follow within the subtree (compared byte-for-byte,
+        // "{storage}/X" < "{storage}0" holds at the very next position no matter what X is).
+        let (start, end): (String, String) =
+            if storage.is_empty() { (String::new(), String::new()) } else { (format!("{storage}/"), format!("{storage}0")) };
+        let bounded = !storage.is_empty();
+        self.paths
+            .range(start..)
+            .take_while(move |(path, _)| !bounded || path.as_str() < end.as_str())
+            .filter_map(move |(path, &idx)| {
+                let rest = if storage.is_empty() { path.as_str() } else { path.strip_prefix(storage)?.strip_prefix('/')? };
+                if rest.is_empty() || rest.contains('/') {
+                    None
+                } else {
+                    Some((path.as_str(), self.entries[idx].object_type))
+                }
+            })
     }
 }
 
@@ -340,16 +421,17 @@ impl StructuredObject for OleFile {
     }
 }
 
-/// A trivial in-memory [`VirtualFile`] handed back by [`OleFile::open_child`]: either one
-/// stream's already-materialized bytes, or a storage's zero-length placeholder. Carries the
-/// directory entry's real MACB times and allocation size rather than fabricating them.
-struct OleStreamFile {
+/// A trivial in-memory [`VirtualFile`] handed back by [`OleFile::open_child`] and by
+/// [`crate::filesystem::OleFileSystem::open`]: either one stream's already-materialized bytes,
+/// or a storage's zero-length placeholder. Carries the directory entry's real MACB times and
+/// allocation size rather than fabricating them.
+pub(crate) struct OleStreamFile {
     cursor: Cursor<Vec<u8>>,
     metadata: VMetadata,
 }
 
 impl OleStreamFile {
-    fn stream(bytes: Vec<u8>, allocated: u64, idx: usize, entry: &DirectoryEntry) -> Self {
+    pub(crate) fn stream(bytes: Vec<u8>, allocated: u64, idx: usize, entry: &DirectoryEntry) -> Self {
         let size = bytes.len() as u64;
         let metadata = VMetadata {
             file_type: VFileType::File,
@@ -362,7 +444,7 @@ impl OleStreamFile {
         Self { cursor: Cursor::new(bytes), metadata }
     }
 
-    fn storage(idx: usize, entry: &DirectoryEntry) -> Self {
+    pub(crate) fn storage(idx: usize, entry: &DirectoryEntry) -> Self {
         let metadata = VMetadata {
             file_type: VFileType::Directory,
             size: 0,
@@ -397,6 +479,54 @@ impl VirtualFile for OleStreamFile {
 /// CFBF byte buffer to exercise `OleFile::parse` end-to-end without needing a real-world fixture.
 #[cfg(test)]
 pub(crate) mod tests_support {
+    use super::*;
+
+    /// A hand-built `DirectoryEntry` for synthetic directory-tree tests, shared across this
+    /// crate's test modules.
+    pub(crate) fn entry(name: &str, object_type: ObjectType, left: u32, right: u32, child: u32) -> DirectoryEntry {
+        DirectoryEntry {
+            name: name.to_string(),
+            object_type,
+            left_sibling_id: left,
+            right_sibling_id: right,
+            child_id: child,
+            clsid: [0; 16],
+            start_sector: 0,
+            stream_size: 0,
+            created: None,
+            modified: None,
+        }
+    }
+
+    /// Builds an `OleFile` directly from a hand-built entry list, bypassing `parse()` entirely
+    /// -- for exercising path/tree/filesystem logic against a synthetic directory without
+    /// constructing real sector chains. Shared across this crate's test modules (`ole::tests`,
+    /// `filesystem::tests`, ...), all of which need this exact same private-field construction
+    /// and none of which can do it themselves from outside the `ole` module.
+    pub(crate) fn build_from_entries(entries: Vec<DirectoryEntry>) -> OleFile {
+        let paths = tree::build_paths(&entries).unwrap();
+        OleFile {
+            data: vec![0u8; 4096],
+            header: Header {
+                major_version: 3,
+                minor_version: 0,
+                sector_size: 512,
+                mini_stream_cutoff_size: 4096,
+                first_directory_sector: None,
+                first_mini_fat_sector: None,
+                first_difat_sector: None,
+                num_difat_sectors: 0,
+                difat: [0u32; crate::consts::HEADER_DIFAT_ENTRIES],
+            },
+            fat: Vec::new(),
+            mini_fat: Vec::new(),
+            mini_stream: Vec::new(),
+            entries,
+            paths,
+            document: OnceLock::new(),
+        }
+    }
+
     /// Builds the smallest possible valid CFBF file: a 512-byte-sector header, one FAT sector,
     /// one directory sector holding just the Root Entry (no streams). Used to exercise
     /// [`super::OleFile::parse`] end-to-end without needing a real-world fixture.
@@ -465,6 +595,21 @@ mod tests {
     fn reading_a_missing_stream_is_an_error_not_a_panic() {
         let ole = OleFile::parse(minimal_ole_bytes()).unwrap();
         assert!(ole.read_stream("does not exist").is_err());
+    }
+
+    #[test]
+    fn a_zero_size_stream_reads_as_empty_regardless_of_a_stray_start_sector() {
+        // [MS-CFB] 2.6.1 mandates NOSTREAM/ENDOFCHAIN as a zero-length stream's start_sector,
+        // but a non-compliant writer (or a hand-built fixture, as here) can leave it at some
+        // other value. Both read paths must short-circuit on the declared size alone rather
+        // than attempting to walk that stray value into an empty FAT/mini-FAT table.
+        let entries = vec![
+            tests_support::entry("Root Entry", ObjectType::RootStorage, u32::MAX, u32::MAX, 1),
+            tests_support::entry("Empty", ObjectType::Stream, u32::MAX, u32::MAX, u32::MAX), // start_sector defaults to 0, not NOSTREAM
+        ];
+        let ole = tests_support::build_from_entries(entries);
+        assert_eq!(ole.read_stream("Empty").unwrap(), Vec::<u8>::new());
+        assert_eq!(ole.stream_allocation("Empty").unwrap(), 0);
     }
 
     #[test]
@@ -545,6 +690,67 @@ mod tests {
         let mut a_children: Vec<&str> = ole.children_of("A").iter().map(|(p, _)| *p).collect();
         a_children.sort();
         assert_eq!(a_children, vec!["A/B", "A/C"]);
+    }
+
+    #[test]
+    fn children_iter_agrees_with_children_of() {
+        let entries = vec![
+            test_entry("Root Entry", ObjectType::RootStorage, u32::MAX, u32::MAX, 1),
+            test_entry("A", ObjectType::Storage, u32::MAX, u32::MAX, 2),
+            test_entry("B", ObjectType::Stream, u32::MAX, 3, u32::MAX),
+            test_entry("C", ObjectType::Storage, u32::MAX, u32::MAX, u32::MAX),
+        ];
+        let paths = tree::build_paths(&entries).unwrap();
+        let ole = test_ole_file(entries, paths);
+
+        let mut root_a: Vec<&str> = ole.children_of("").iter().map(|(p, _)| *p).collect();
+        let mut root_b: Vec<&str> = ole.children_iter("").map(|(p, _)| p).collect();
+        root_a.sort();
+        root_b.sort();
+        assert_eq!(root_a, root_b);
+
+        let mut nested_a: Vec<&str> = ole.children_of("A").iter().map(|(p, _)| *p).collect();
+        let mut nested_b: Vec<&str> = ole.children_iter("A").map(|(p, _)| p).collect();
+        nested_a.sort();
+        nested_b.sort();
+        assert_eq!(nested_a, nested_b);
+        assert_eq!(nested_a, vec!["A/B", "A/C"]);
+    }
+
+    #[test]
+    fn children_iter_does_not_bleed_into_a_lexicographically_adjacent_sibling() {
+        // "A" and "A0" (no slash) are lexicographic neighbors of "A/..." paths; a naive prefix
+        // range must not pull "A0"'s own children into "A"'s results.
+        let entries = vec![
+            test_entry("Root Entry", ObjectType::RootStorage, u32::MAX, u32::MAX, 1),
+            test_entry("A", ObjectType::Storage, u32::MAX, 2, 3),
+            test_entry("A0", ObjectType::Storage, u32::MAX, u32::MAX, 4),
+            test_entry("Inside", ObjectType::Stream, u32::MAX, u32::MAX, u32::MAX),
+            test_entry("AlsoInside", ObjectType::Stream, u32::MAX, u32::MAX, u32::MAX),
+        ];
+        let paths = tree::build_paths(&entries).unwrap();
+        let ole = test_ole_file(entries, paths);
+
+        let a_children: Vec<&str> = ole.children_iter("A").map(|(p, _)| p).collect();
+        assert_eq!(a_children, vec!["A/Inside"]);
+    }
+
+    #[test]
+    fn stream_allocation_matches_read_stream_with_allocation() {
+        // Real, non-synthetic coverage against a fixture with both FAT- and mini-FAT-resident
+        // streams; follows the crate's fixture-skip pattern (see tests/sample_doc_fixture.rs).
+        let path = std::path::Path::new("artifacts/SampleDoc.doc");
+        if !path.exists() {
+            println!("SKIP: fixture 'artifacts/SampleDoc.doc' unavailable");
+            return;
+        }
+        let data = std::fs::read(path).expect("fixture exists but could not be read");
+        let ole = OleFile::parse(data).unwrap();
+        for path in ole.stream_names().map(str::to_string).collect::<Vec<_>>() {
+            let (_, from_read) = ole.read_stream_with_allocation(&path).unwrap();
+            let from_count = ole.stream_allocation(&path).unwrap();
+            assert_eq!(from_read, from_count, "mismatch for stream '{path}'");
+        }
     }
 
     #[test]

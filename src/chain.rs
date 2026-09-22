@@ -49,6 +49,38 @@ pub fn follow_chain<'a>(
     Ok(out)
 }
 
+/// Counts how many units a chain starting at `start` visits through `table`, without reading
+/// any of their bytes -- the same cycle/bounds guards as [`follow_chain`], but for a caller that
+/// only needs the chain's *length* (its real on-disk allocation), not its content. This is what
+/// lets [`crate::ole::OleFile`]'s `FileSystem::metadata()` report a stream's allocated size
+/// without materializing the stream itself, which matters because `metadata()` is called once
+/// per entry during a directory walk.
+pub fn count_chain(table: &[u32], start: u32) -> ForensicResult<u64> {
+    if start >= ENDOFCHAIN {
+        return Ok(0);
+    }
+    let mut count = 0u64;
+    let mut visited = HashSet::new();
+    let mut current = start;
+    loop {
+        if !visited.insert(current) {
+            return Err(ForensicError::invalid_format(
+                "ole_sector_chain",
+                format!("cyclic sector chain detected at sector {current}"),
+            ));
+        }
+        count += 1;
+        let idx = current as usize;
+        ensure_buffer_range!(table, idx, idx + 1);
+        let next = table[idx];
+        if next >= ENDOFCHAIN {
+            break;
+        }
+        current = next;
+    }
+    Ok(count)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -89,5 +121,37 @@ mod tests {
         let table = vec![5u32];
         let result = follow_chain(&table, 0, |_| Ok(&b"x"[..]));
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn count_chain_counts_units_without_reading_them() {
+        let table = vec![2u32, ENDOFCHAIN, ENDOFCHAIN];
+        assert_eq!(count_chain(&table, 0).unwrap(), 2);
+    }
+
+    #[test]
+    fn count_chain_agrees_with_follow_chain_on_length() {
+        let table = vec![1u32, 2u32, ENDOFCHAIN];
+        let units: [&[u8]; 3] = [b"AA", b"BB", b"CC"];
+        let followed = follow_chain(&table, 0, |s| Ok(units[s as usize])).unwrap();
+        let counted = count_chain(&table, 0).unwrap();
+        assert_eq!(followed.len() as u64, counted * 2); // 2 bytes per unit here
+    }
+
+    #[test]
+    fn count_chain_empty_start_is_zero() {
+        assert_eq!(count_chain(&[], ENDOFCHAIN).unwrap(), 0);
+    }
+
+    #[test]
+    fn count_chain_detects_a_cycle_instead_of_hanging() {
+        let table = vec![0u32];
+        assert!(count_chain(&table, 0).is_err());
+    }
+
+    #[test]
+    fn count_chain_rejects_a_sector_number_past_the_end_of_the_table() {
+        let table = vec![5u32];
+        assert!(count_chain(&table, 0).is_err());
     }
 }

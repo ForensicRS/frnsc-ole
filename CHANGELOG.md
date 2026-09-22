@@ -9,6 +9,55 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`OleFileSystem`, implementing `forensic_rs::FileSystem`** — this crate's primary integration
+  surface from here on: storages are directories, streams are files, so `walk`, `glob`, the
+  bridge's `VfsProvider`, MCP resource browsing, and `AuthorizedVirtualFileSystem` policy
+  enforcement all work over an OLE document's internals with zero OLE-specific code anywhere
+  downstream. `StructuredObject` on `OleFile` is kept for the embedding relationship but is no
+  longer the primary way to reach a document's contents.
+  - Also implements `forensic_rs::traits::vfs::PathAttributes`, surfacing per-path facts:
+    the whole `OleFile::attributes()` map at the filesystem root, plus per-storage
+    (`ole.storage.*`) and per-stream (`ole.stream.*`, including allocation/slack/truncation
+    facts) keys at their own paths.
+  - Case-insensitive by construction (exact match first, then a case-folded fallback), per
+    [MS-CFB] 2.6.4's own uppercase-mapped sibling ordering; an ambiguous fold (two siblings
+    differing only by case, itself a spec violation) refuses rather than guessing, while both
+    exact names remain independently reachable.
+  - A directory-entry name containing one of [MS-CFB] 2.6.1's forbidden characters (`/ \ : !`)
+    or equal to `.`/`..` is simultaneously a spec violation and an `FPath`-parsing hazard, so it
+    is excluded from the filesystem surface entirely (never opened, never listed) rather than
+    rejecting the whole mount or escaping the name — and reported via the new
+    `OleFileSystem::name_anomalies()`. Validated against a 58-stream MSI fixture with heavily
+    scrambled Unicode stream names: zero false positives.
+  - `OleFile::stream_allocation()` (backed by a new `chain::count_chain`) reports a stream's
+    real on-disk allocation without materializing its bytes — required so `metadata()`, called
+    once per entry during a directory walk, stays O(1) rather than O(stream size).
+  - `OleFile::children_iter()`, a lazy `BTreeMap::range`-scoped twin of `children_of()` — the
+    latter re-scans every path in the container per call, which made a full walk O(n²) on an
+    attacker-controlled directory tree.
+  - New: `OleFile::{header, path_index, stream_allocation, children_iter}`; `crate::names`
+    (`NameAnomaly`, `classify`); `chain::count_chain`.
+- **`OleFileSystemFactory`**, a second `FormatFactory` mounting a CFBF file as `Mounted::FileSystem`
+  via `OleFileSystem`, alongside the existing `OleFormatFactory` (`Mounted::Object`). Both share
+  the same probe/mount logic.
+
+### Changed
+
+- **Breaking:** `OleFormatFactory::name()` changed from `"frnsc-ole"` to `"frnsc-ole-object"`.
+  `MountResolver`'s tie-break is lexicographic-smallest `name()`, so this — combined with the new
+  `OleFileSystemFactory` taking the bare `"frnsc-ole"` name — means an *untargeted* resolve
+  (`want: None`) with both factories registered now returns `Mounted::FileSystem`, not
+  `Mounted::Object`. A caller that relied on the old default (e.g. calling `.as_object().expect(..)`
+  on an untargeted resolve) must now pass `want: Some(MountKind::Object)` explicitly.
+
+### Fixed
+
+- A zero-declared-size stream whose `start_sector` was left at some non-`NOSTREAM` value (as
+  [MS-CFB] 2.6.1 technically permits a non-compliant writer to do, and as this crate's own
+  hand-built test fixtures happened to do by construction) could error out of a chain walk with
+  an out-of-range/empty-table failure instead of simply reading as empty. Both `read_stream` and
+  the new `stream_allocation` now short-circuit on declared size alone.
+
 - A typed document view on top of the raw container, reachable via `OleFile::document()`
   (built lazily, cached thereafter): `OleDocument`, with
   - Document-format identification (`OleFormat`/`FormatIdentity`/`FormatEvidence`) from the

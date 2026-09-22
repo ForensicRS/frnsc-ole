@@ -2,12 +2,20 @@
 
 ## Project Overview
 
-`frnsc-ole` implements the `forensic-rs` `StructuredObject`/`FormatFactory` traits for the MS-CFB
-container layer (header, DIFAT/FAT, mini-FAT, directory tree), and — on top of that — a typed
-document view (property sets, VBA macros, embedded objects, Word text) that is not bound to any
-framework trait. That typed view then reaches the rest of the ecosystem through three seams:
-`ArtifactParserFactory` (pipeline), `ProviderHook` (bridge), and, behind the `capabilities`
-feature, a set of `ForensicTool`s (MCP).
+`frnsc-ole` parses the MS-CFB container layer (header, DIFAT/FAT, mini-FAT, directory tree) and,
+on top of that, a typed document view (property sets, VBA macros, embedded objects, Word text)
+not bound to any framework trait. The container reaches the rest of the ecosystem primarily as
+**`OleFileSystem: forensic_rs::FileSystem`** (storages are directories, streams are files) plus
+`forensic_rs::traits::vfs::PathAttributes` for per-path facts — so every generic VFS-based tool
+(`walk`, `glob`, the bridge's `VfsProvider`, MCP resource browsing, `AuthorizedVirtualFileSystem`
+policy enforcement) works over a document's internals with **zero OLE-specific code anywhere
+downstream**. `OleFile`'s `StructuredObject` implementation is kept for the embedding
+relationship (an OLE document embedded inside another format) but is not the primary surface.
+
+Why `FileSystem` and not a bespoke pipeline/bridge/MCP integration: see
+`forensic-rs/AGENTS.md`'s "Capability probes are how optional power is discovered" — an inherent
+method (what this crate used to expose document facts through) is invisible to any caller
+holding `dyn FileSystem`, which is every generic triage tool; a capability probe is not.
 
 **Depends on:** [`forensic-rs`](https://github.com/ForensicRS/forensic-rs) 0.14
 
@@ -56,6 +64,36 @@ that content here — this file is for what's specific to `frnsc-ole`.
 - **Zero serde.** Serialization is delegated entirely to `forensic-rs`'s own `ForensicData` /
   `BridgeValue` / `CapabilityValue`, matching every sibling crate in this ecosystem.
 - **No bins.** `examples/` is this ecosystem's substitute for a CLI.
+- **`FileSystem::metadata()` must never materialize a stream's bytes.** It is called once per
+  entry during a directory walk; use `OleFile::stream_allocation`/`chain::count_chain` (walks
+  the FAT/mini-FAT chain to get its *length* only) rather than `read_stream`/`follow_chain`,
+  which must read every sector.
+- **`children_of()` is O(total paths) per call — never use it in a loop.** Use
+  `OleFile::children_iter()` (a lazy `BTreeMap::range` scan) for anything that visits more than
+  one storage's children, or a walk becomes O(n²) on an attacker-controlled directory tree.
+- **A directory-entry name is skipped and reported, never silently rejected-whole-mount or
+  escaped.** [MS-CFB] 2.6.1 forbids `/ \ : !`; `FPath` treats `/`/`\` as separators and `X:` as
+  a drive, so such a name is both a spec violation and a path-confusion vector. The policy is
+  `crate::names::classify` + `OleFileSystem::hidden` — exclude the entry from the `FileSystem`
+  surface, keep it visible via `OleFile::entries()` and `OleFileSystem::name_anomalies()`. Do
+  not widen the character set beyond exactly those four plus `.`/`..`/empty: over-filtering
+  (flagging an unusual-but-legal name — a `\x01`/`\x05` marker byte, MSI's obfuscated Unicode
+  table names) silently hides real evidence, which is the actual risk here. Any change to
+  `classify` must re-run against the MSI fixture and assert `name_anomalies().is_empty()` still
+  holds.
+- **`OleFileSystem::case_sensitivity()` is `Insensitive` because [MS-CFB] 2.6.4 says so**
+  (siblings are ordered by uppercase-mapped name), not as a convenience default. Lookup is
+  exact-match-first, then a precomputed case-fold index; an ambiguous fold (two addressable
+  entries folding to the same key — itself a spec violation) refuses rather than guessing, while
+  both entries stay reachable by their own exact names.
+- **`OleFileSystem::new`/`from_arc` must never touch `OleFile::document()`.** A caller that only
+  walks and reads streams must not pay for property-set/format decoding it never asked for —
+  that's the entire reason `document()` is `OnceLock`-cached instead of eager.
+- **A zero-declared-size stream's `start_sector` cannot be trusted.** [MS-CFB] 2.6.1 mandates
+  `NOSTREAM`/`ENDOFCHAIN` there, but a non-compliant writer (or a hand-built test fixture) can
+  leave it at something else. `read_stream_by_index`/`stream_allocation_by_index` both
+  short-circuit on declared size == 0 before attempting any chain walk; don't remove that guard
+  to "simplify" the code.
 
 ## Module structure
 
@@ -64,17 +102,19 @@ src/
 ├── consts.rs      -- [MS-CFB] constants (signature, sector markers, sizes)
 ├── header.rs       -- 512-byte CFBF header
 ├── fat.rs           -- DIFAT + FAT, regular sector reads
-├── chain.rs          -- generic cycle-safe FAT/mini-FAT chain walker
+├── chain.rs          -- generic cycle-safe FAT/mini-FAT chain walker (+ count-only variant)
 ├── minifat.rs         -- mini-FAT + mini stream
 ├── directory.rs        -- 128-byte directory entry records, incl. MACB times
 ├── tree.rs               -- child/sibling red-black tree -> "Storage/Stream" paths
 ├── guid.rs                -- canonical mixed-endian CLSID/GUID formatting
-├── ole.rs                  -- OleFile: StructuredObject impl, the container-level public API
-└── factory.rs                -- OleFormatFactory: FormatFactory impl (probe/mount)
+├── names.rs                -- NameAnomaly + classify: what can't be an FPath component
+├── ole.rs                   -- OleFile: StructuredObject impl, container-level public API
+├── filesystem.rs              -- OleFileSystem: FileSystem + PathAttributes impl (primary surface)
+└── factory.rs                  -- OleFormatFactory/OleFileSystemFactory: FormatFactory impls
 ```
 
-Later phases add a typed document layer (property sets, VBA, embedded objects, Word text) and
-the pipeline/bridge/capabilities integration seams — see the module map grow here as they land.
+Later phases add the rest of the typed document layer (VBA, embedded objects, Word text), which
+feeds `PathAttributes` as additional `ole.*` keys with no structural change to the above.
 
 ## Error handling
 
