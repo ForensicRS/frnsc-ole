@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- A typed document view on top of the raw container, reachable via `OleFile::document()`
+  (built lazily, cached thereafter): `OleDocument`, with
+  - Document-format identification (`OleFormat`/`FormatIdentity`/`FormatEvidence`) from the
+    root storage's CLSID, with a stream-name-based fallback and an explicit
+    `clsid_conflicts_with_streams` flag when the two signals disagree. Recognizes Word 97,
+    Excel 97, PowerPoint 97, Windows Installer packages, and Outlook messages.
+  - [MS-OLEPS] property-set parsing (`oleps` module): `SummaryInformation`,
+    `DocumentSummaryInformation`, and the Windows Installer's own repurposed
+    `MsiSummaryInformation` projection over the same stream, plus user-defined properties via
+    the section's name dictionary. CP1252 and UTF-8 code pages are decoded; every other
+    declared code page decodes honestly to `AnsiString::Undecodable` rather than mangling the
+    bytes. Every property is addressed independently by its own absolute offset, so one
+    malformed or unrecognized-type property never costs the rest of the section.
+  - `EncryptionState` (`NotEncrypted`/`Encrypted`/`NotChecked`) -- currently always
+    `NotChecked`, since detection lands alongside Word text extraction in a later phase. Never
+    silently reported as "not encrypted".
+  - `OleFile::attributes()` now also reports `ole.document_type`, `ole.author`,
+    `ole.last_saved_by`, `ole.title`, `ole.template`, `ole.application_name`, `ole.revision`,
+    `ole.company`, `ole.created`, `ole.last_saved`, `ole.last_printed`, and `ole.encryption`
+    when the document view resolves them.
+
 ### Fixed
 
 - `VirtualFile::metadata()` for an OLE stream/storage no longer reports a fabricated

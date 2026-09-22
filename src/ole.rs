@@ -5,12 +5,14 @@
 
 use std::collections::BTreeMap;
 use std::io::{Cursor, Read, Seek, SeekFrom};
+use std::sync::OnceLock;
 
 use forensic_rs::ensure_format;
 use forensic_rs::prelude::*;
 use forensic_rs::traits::vfs::VMetadata;
 
 use crate::directory::{self, DirectoryEntry, ObjectType};
+use crate::document::OleDocument;
 use crate::fat::{self, build_fat};
 use crate::header::Header;
 use crate::minifat;
@@ -30,6 +32,10 @@ pub struct OleFile {
     /// Every reachable stream's *and* storage's full path, keyed to its index in `entries`.
     /// See [`tree::build_paths`].
     paths: BTreeMap<String, usize>,
+    /// The typed document view, built lazily on first access via [`Self::document`] and cached
+    /// from then on. `OnceLock` rather than eager construction in [`Self::parse`] so a caller
+    /// that only wants raw streams never pays for property-set/format decoding it doesn't use.
+    document: OnceLock<OleDocument>,
 }
 
 impl OleFile {
@@ -62,6 +68,22 @@ impl OleFile {
             mini_stream,
             entries,
             paths,
+            document: OnceLock::new(),
+        })
+    }
+
+    /// The typed document view over this container: property sets, format identification, and
+    /// (as later phases land) VBA macros, embedded objects, and Word text. Built on first
+    /// access and cached from then on.
+    pub fn document(&self) -> &OleDocument {
+        self.document.get_or_init(|| {
+            let top_level: Vec<&str> = self
+                .children_of("")
+                .into_iter()
+                .filter(|(_, kind)| matches!(kind, ObjectType::Stream))
+                .map(|(name, _)| name)
+                .collect();
+            OleDocument::build(self, &self.entries[0], &top_level)
         })
     }
 
@@ -196,6 +218,14 @@ impl OleFile {
     }
 }
 
+/// Inserts `key` only when `value` is `Some` -- the crate-wide rule that an absent fact is an
+/// omitted key, never a zero-filled or empty one.
+fn insert_text(attrs: &mut BTreeMap<Text, Field>, key: &'static str, value: &Option<String>) {
+    if let Some(v) = value {
+        attrs.insert(Text::Borrowed(key), Field::Text(Text::Owned(v.clone())));
+    }
+}
+
 impl StructuredObject for OleFile {
     fn kind(&self) -> &'static str {
         "ole"
@@ -267,6 +297,44 @@ impl StructuredObject for OleFile {
         }
         if let Some(modified) = self.entries[0].modified {
             attrs.insert(Text::Borrowed("ole.root_modified"), Field::Date(modified));
+        }
+
+        let doc = self.document();
+        attrs.insert(Text::Borrowed("ole.document_type"), Field::Text(Text::Owned(doc.format().format.to_string())));
+        if let Some(summary) = doc.summary_information() {
+            insert_text(&mut attrs, "ole.author", &summary.author);
+            insert_text(&mut attrs, "ole.last_saved_by", &summary.last_saved_by);
+            insert_text(&mut attrs, "ole.title", &summary.title);
+            insert_text(&mut attrs, "ole.template", &summary.template);
+            insert_text(&mut attrs, "ole.application_name", &summary.application_name);
+            insert_text(&mut attrs, "ole.revision", &summary.revision_number);
+            if let Some(created) = summary.created {
+                attrs.insert(Text::Borrowed("ole.created"), Field::Date(created));
+            }
+            if let Some(last_saved) = summary.last_saved {
+                attrs.insert(Text::Borrowed("ole.last_saved"), Field::Date(last_saved));
+            }
+            if let Some(last_printed) = summary.last_printed {
+                attrs.insert(Text::Borrowed("ole.last_printed"), Field::Date(last_printed));
+            }
+        }
+        if let Some(doc_summary) = doc.document_summary_information() {
+            insert_text(&mut attrs, "ole.company", &doc_summary.company);
+        }
+        match doc.encryption() {
+            crate::crypto::EncryptionState::NotEncrypted => {
+                attrs.insert(Text::Borrowed("ole.is_encrypted"), Field::U64(0));
+                attrs.insert(Text::Borrowed("ole.encryption"), Field::Text(Text::Borrowed("none")));
+            }
+            crate::crypto::EncryptionState::Encrypted { scheme, .. } => {
+                attrs.insert(Text::Borrowed("ole.is_encrypted"), Field::U64(1));
+                attrs.insert(Text::Borrowed("ole.encryption"), Field::Text(Text::Owned(scheme.clone())));
+            }
+            // Deliberately no `ole.is_encrypted` here: "unchecked" is not the same claim as
+            // "confirmed not encrypted", and a boolean field cannot express the difference.
+            crate::crypto::EncryptionState::NotChecked { .. } => {
+                attrs.insert(Text::Borrowed("ole.encryption"), Field::Text(Text::Borrowed("not_checked")));
+            }
         }
         attrs
     }
@@ -431,15 +499,7 @@ mod tests {
             test_entry("Stream", ObjectType::Stream, u32::MAX, u32::MAX, u32::MAX),
         ];
         let paths = tree::build_paths(&entries).unwrap();
-        let ole = OleFile {
-            data: vec![0u8; 4096],
-            header: test_header(),
-            fat: Vec::new(),
-            mini_fat: Vec::new(),
-            mini_stream: Vec::new(),
-            entries,
-            paths,
-        };
+        let ole = test_ole_file(entries, paths);
         let children = ole.children().unwrap();
         let storage_kind = children
             .iter()
@@ -460,15 +520,7 @@ mod tests {
             test_entry("Storage", ObjectType::Storage, u32::MAX, u32::MAX, u32::MAX),
         ];
         let paths = tree::build_paths(&entries).unwrap();
-        let ole = OleFile {
-            data: vec![0u8; 4096],
-            header: test_header(),
-            fat: Vec::new(),
-            mini_fat: Vec::new(),
-            mini_stream: Vec::new(),
-            entries,
-            paths,
-        };
+        let ole = test_ole_file(entries, paths);
         let file = ole.open_child(&LocatorSegment::Stream(CompactString::from("Storage"))).unwrap();
         let meta = file.metadata().unwrap();
         assert_eq!(meta.file_type, VFileType::Directory);
@@ -518,6 +570,7 @@ mod tests {
             mini_stream: Vec::new(),
             entries,
             paths,
+            document: OnceLock::new(),
         }
     }
 
