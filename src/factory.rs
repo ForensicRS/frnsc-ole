@@ -45,6 +45,10 @@ impl FormatFactory for OleFileSystemFactory {
         MountKind::FileSystem
     }
 
+    fn extensions(&self) -> &[&'static str] {
+        crate::consts::CFBF_EXTENSIONS
+    }
+
     fn probe(&self, file: &mut dyn VirtualFile, ctx: &MountContext<'_>) -> ForensicResult<ProbeScore> {
         probe_cfbf(file, ctx)
     }
@@ -74,6 +78,10 @@ impl FormatFactory for OleFormatFactory {
 
     fn yields(&self) -> MountKind {
         MountKind::Object
+    }
+
+    fn extensions(&self) -> &[&'static str] {
+        crate::consts::CFBF_EXTENSIONS
     }
 
     fn probe(&self, file: &mut dyn VirtualFile, ctx: &MountContext<'_>) -> ForensicResult<ProbeScore> {
@@ -318,6 +326,16 @@ mod tests {
         let score_fs = OleFileSystemFactory::new().probe(a.as_mut(), &ctx).unwrap();
         let score_obj = OleFormatFactory::new().probe(b.as_mut(), &ctx).unwrap();
         assert_eq!(score_fs, score_obj);
+    }
+
+    #[test]
+    fn both_factories_advertise_cfbf_extensions_for_descent_policy() {
+        // `ContainerFs::DescentPolicy::from_resolver` derives its extension allow-list from
+        // registered factories' `extensions()` -- if this stayed the trait default (`&[]`), a
+        // real .doc/.msi on disk would never even be probed for auto-descent.
+        assert!(OleFileSystemFactory::new().extensions().contains(&"doc"));
+        assert!(OleFileSystemFactory::new().extensions().contains(&"msi"));
+        assert!(OleFormatFactory::new().extensions().contains(&"doc"));
     }
 
     /// Pins the naming decision the module doc describes: an untargeted resolve must

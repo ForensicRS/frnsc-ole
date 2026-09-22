@@ -33,3 +33,14 @@ pub const MAX_REGULAR_SECTOR: u32 = 0xFFFFFFF9;
 
 /// `child_id`/`left_sibling_id`/`right_sibling_id` value meaning "no such entry".
 pub const NOSTREAM: u32 = 0xFFFFFFFF;
+
+/// File extensions commonly used by CFBF-based formats — legacy (pre-OOXML) Microsoft Office
+/// documents, Windows Installer packages, and Outlook messages, all built on this container.
+///
+/// Advisory only: this feeds [`forensic_rs::traits::format::FormatFactory::extensions`], a
+/// pure pre-filter hint a caller (e.g. `ContainerFs::DescentPolicy`) may use to skip probing
+/// files that can't possibly be this format. It is never authoritative — `probe` still checks
+/// the real magic bytes and header structure — so an unlisted extension only costs a caller
+/// using that hint a missed auto-descent, never a false positive.
+pub const CFBF_EXTENSIONS: &[&str] =
+    &["doc", "dot", "xls", "xlt", "xla", "ppt", "pps", "pot", "msi", "msp", "mst", "msg", "vsd"];
