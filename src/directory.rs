@@ -79,7 +79,10 @@ impl DirectoryEntry {
     }
 
     pub fn is_storage(&self) -> bool {
-        matches!(self.object_type, ObjectType::Storage | ObjectType::RootStorage)
+        matches!(
+            self.object_type,
+            ObjectType::Storage | ObjectType::RootStorage
+        )
     }
 }
 
@@ -256,7 +259,10 @@ mod tests {
         bytes[108..116].copy_from_slice(&epoch_filetime.to_le_bytes()); // modified_time
         let entries = read_directory(&bytes).unwrap();
         let created = entries[0].created.expect("nonzero filetime must decode");
-        assert_eq!(created, ForensicTimestamp::from_win_filetime(epoch_filetime));
+        assert_eq!(
+            created,
+            ForensicTimestamp::from_win_filetime(epoch_filetime)
+        );
     }
 
     #[test]

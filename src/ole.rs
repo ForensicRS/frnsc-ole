@@ -49,7 +49,11 @@ impl OleFile {
             None => Vec::new(),
         };
         let entries = directory::read_directory(&directory_bytes)?;
-        ensure_format!(!entries.is_empty(), "ole_directory", "directory stream is empty");
+        ensure_format!(
+            !entries.is_empty(),
+            "ole_directory",
+            "directory stream is empty"
+        );
 
         let root = &entries[0];
         let mini_stream = if root.stream_size > 0 {
@@ -108,7 +112,9 @@ impl OleFile {
     /// Every reachable path (stream or storage) alongside its [`ObjectType`], in a stable
     /// (sorted) order.
     pub fn paths(&self) -> impl Iterator<Item = (&str, ObjectType)> {
-        self.paths.iter().map(|(path, &idx)| (path.as_str(), self.entries[idx].object_type))
+        self.paths
+            .iter()
+            .map(|(path, &idx)| (path.as_str(), self.entries[idx].object_type))
     }
 
     /// The full, flat directory-entry list, in on-disk order (index 0 is always the root
@@ -142,8 +148,14 @@ impl OleFile {
         self.paths
             .iter()
             .filter(|(path, _)| {
-                let Some(rest) = path.strip_prefix(storage) else { return false };
-                let rest = if storage.is_empty() { path.as_str() } else { rest.strip_prefix('/').unwrap_or(rest) };
+                let Some(rest) = path.strip_prefix(storage) else {
+                    return false;
+                };
+                let rest = if storage.is_empty() {
+                    path.as_str()
+                } else {
+                    rest.strip_prefix('/').unwrap_or(rest)
+                };
                 !rest.is_empty() && !rest.contains('/')
             })
             .map(|(path, &idx)| (path.as_str(), self.entries[idx].object_type))
@@ -161,7 +173,10 @@ impl OleFile {
     /// equal to what a caller actually finds by enumerating storages, rather than being off by
     /// one relative to it.
     pub fn storage_count(&self) -> usize {
-        self.paths.values().filter(|&&idx| self.entries[idx].is_storage()).count()
+        self.paths
+            .values()
+            .filter(|&&idx| self.entries[idx].is_storage())
+            .count()
     }
 
     /// Directory entries in unused/free slots — [MS-CFB] 2.6.1 `ObjectType::Unallocated`. These
@@ -189,10 +204,12 @@ impl OleFile {
     /// declared-size bytes. The difference between the two is stream slack — evidence, not
     /// waste — and is what lets [`OleStreamFile::metadata`] report `allocated_size` honestly.
     pub fn read_stream_with_allocation(&self, path: &str) -> ForensicResult<(Vec<u8>, u64)> {
-        let &idx = self
-            .paths
-            .get(path)
-            .ok_or_else(|| ForensicError::missing_data("ole_stream", CompactString::from(format!("no stream at '{path}'"))))?;
+        let &idx = self.paths.get(path).ok_or_else(|| {
+            ForensicError::missing_data(
+                "ole_stream",
+                CompactString::from(format!("no stream at '{path}'")),
+            )
+        })?;
         let entry = &self.entries[idx];
         if !entry.is_stream() {
             return Err(ForensicError::invalid_format(
@@ -217,14 +234,23 @@ impl OleFile {
             return Ok((Vec::new(), 0));
         }
         let raw = if entry.stream_size as usize >= self.header.mini_stream_cutoff_size {
-            fat::read_stream_chain(&self.data, &self.fat, entry.start_sector, self.header.sector_size)?
+            fat::read_stream_chain(
+                &self.data,
+                &self.fat,
+                entry.start_sector,
+                self.header.sector_size,
+            )?
         } else {
             minifat::read_mini_chain(&self.mini_stream, &self.mini_fat, entry.start_sector)?
         };
         let allocated = raw.len() as u64;
         // The last sector in a chain is padded up to a whole sector; trim back to the
         // directory entry's own declared (exact) size rather than exposing the padding.
-        let bytes = if raw.len() > declared_size { raw[..declared_size].to_vec() } else { raw };
+        let bytes = if raw.len() > declared_size {
+            raw[..declared_size].to_vec()
+        } else {
+            raw
+        };
         Ok((bytes, allocated))
     }
 
@@ -246,10 +272,12 @@ impl OleFile {
     /// once per directory entry during a walk) report allocation/slack honestly without making
     /// the walk itself O(total stream bytes).
     pub fn stream_allocation(&self, path: &str) -> ForensicResult<u64> {
-        let &idx = self
-            .paths
-            .get(path)
-            .ok_or_else(|| ForensicError::missing_data("ole_stream", CompactString::from(format!("no stream at '{path}'"))))?;
+        let &idx = self.paths.get(path).ok_or_else(|| {
+            ForensicError::missing_data(
+                "ole_stream",
+                CompactString::from(format!("no stream at '{path}'")),
+            )
+        })?;
         self.stream_allocation_by_index(idx)
     }
 
@@ -282,14 +310,21 @@ impl OleFile {
         // below `0` (0x30), so `"{storage}/".."{storage}0"` is a tight, always-correct bound
         // regardless of what characters follow within the subtree (compared byte-for-byte,
         // "{storage}/X" < "{storage}0" holds at the very next position no matter what X is).
-        let (start, end): (String, String) =
-            if storage.is_empty() { (String::new(), String::new()) } else { (format!("{storage}/"), format!("{storage}0")) };
+        let (start, end): (String, String) = if storage.is_empty() {
+            (String::new(), String::new())
+        } else {
+            (format!("{storage}/"), format!("{storage}0"))
+        };
         let bounded = !storage.is_empty();
         self.paths
             .range(start..)
             .take_while(move |(path, _)| !bounded || path.as_str() < end.as_str())
             .filter_map(move |(path, &idx)| {
-                let rest = if storage.is_empty() { path.as_str() } else { path.strip_prefix(storage)?.strip_prefix('/')? };
+                let rest = if storage.is_empty() {
+                    path.as_str()
+                } else {
+                    path.strip_prefix(storage)?.strip_prefix('/')?
+                };
                 if rest.is_empty() || rest.contains('/') {
                     None
                 } else {
@@ -326,8 +361,15 @@ impl StructuredObject for OleFile {
             .paths
             .iter()
             .map(|(path, &idx)| {
-                let kind = if self.entries[idx].is_storage() { MountKind::Object } else { MountKind::File };
-                (LocatorSegment::Stream(CompactString::from(path.as_str())), kind)
+                let kind = if self.entries[idx].is_storage() {
+                    MountKind::Object
+                } else {
+                    MountKind::File
+                };
+                (
+                    LocatorSegment::Stream(CompactString::from(path.as_str())),
+                    kind,
+                )
             })
             .collect())
     }
@@ -340,39 +382,77 @@ impl StructuredObject for OleFile {
             ));
         };
         let &idx = self.paths.get(name.as_str()).ok_or_else(|| {
-            ForensicError::missing_data("ole_stream", CompactString::from(format!("no entry at '{name}'")))
+            ForensicError::missing_data(
+                "ole_stream",
+                CompactString::from(format!("no entry at '{name}'")),
+            )
         })?;
         let entry = &self.entries[idx];
         if entry.is_storage() {
             return Ok(Box::new(OleStreamFile::storage(idx, entry)));
         }
         let (bytes, allocated) = self.read_stream_by_index(idx)?;
-        Ok(Box::new(OleStreamFile::stream(bytes, allocated, idx, entry)))
+        Ok(Box::new(OleStreamFile::stream(
+            bytes, allocated, idx, entry,
+        )))
     }
 
     fn attributes(&self) -> BTreeMap<Text, Field> {
         let mut attrs = BTreeMap::new();
-        attrs.insert(Text::Borrowed("ole.major_version"), Field::U64(self.header.major_version as u64));
-        attrs.insert(Text::Borrowed("ole.minor_version"), Field::U64(self.header.minor_version as u64));
-        attrs.insert(Text::Borrowed("ole.sector_size"), Field::U64(self.header.sector_size as u64));
-        attrs.insert(Text::Borrowed("ole.mini_sector_size"), Field::U64(crate::consts::MINI_SECTOR_SIZE as u64));
+        attrs.insert(
+            Text::Borrowed("ole.major_version"),
+            Field::U64(self.header.major_version as u64),
+        );
+        attrs.insert(
+            Text::Borrowed("ole.minor_version"),
+            Field::U64(self.header.minor_version as u64),
+        );
+        attrs.insert(
+            Text::Borrowed("ole.sector_size"),
+            Field::U64(self.header.sector_size as u64),
+        );
+        attrs.insert(
+            Text::Borrowed("ole.mini_sector_size"),
+            Field::U64(crate::consts::MINI_SECTOR_SIZE as u64),
+        );
         attrs.insert(
             Text::Borrowed("ole.mini_stream_cutoff_size"),
             Field::U64(self.header.mini_stream_cutoff_size as u64),
         );
-        attrs.insert(Text::Borrowed("ole.byte_order"), Field::Text(Text::Borrowed("little-endian")));
-        attrs.insert(Text::Borrowed("ole.total_size"), Field::U64(self.data.len() as u64));
-        attrs.insert(Text::Borrowed("ole.directory_entry_count"), Field::U64(self.entries.len() as u64));
-        attrs.insert(Text::Borrowed("ole.stream_count"), Field::U64(self.stream_count() as u64));
-        attrs.insert(Text::Borrowed("ole.storage_count"), Field::U64(self.storage_count() as u64));
+        attrs.insert(
+            Text::Borrowed("ole.byte_order"),
+            Field::Text(Text::Borrowed("little-endian")),
+        );
+        attrs.insert(
+            Text::Borrowed("ole.total_size"),
+            Field::U64(self.data.len() as u64),
+        );
+        attrs.insert(
+            Text::Borrowed("ole.directory_entry_count"),
+            Field::U64(self.entries.len() as u64),
+        );
+        attrs.insert(
+            Text::Borrowed("ole.stream_count"),
+            Field::U64(self.stream_count() as u64),
+        );
+        attrs.insert(
+            Text::Borrowed("ole.storage_count"),
+            Field::U64(self.storage_count() as u64),
+        );
         attrs.insert(
             Text::Borrowed("ole.unallocated_entry_count"),
             Field::U64(self.unallocated_entries().count() as u64),
         );
         if let Some(clsid) = self.root_clsid() {
-            attrs.insert(Text::Borrowed("ole.root_clsid"), Field::Text(Text::Owned(clsid)));
+            attrs.insert(
+                Text::Borrowed("ole.root_clsid"),
+                Field::Text(Text::Owned(clsid)),
+            );
         }
-        attrs.insert(Text::Borrowed("ole.root_entry_size"), Field::U64(self.entries[0].stream_size));
+        attrs.insert(
+            Text::Borrowed("ole.root_entry_size"),
+            Field::U64(self.entries[0].stream_size),
+        );
         if let Some(created) = self.entries[0].created {
             attrs.insert(Text::Borrowed("ole.root_created"), Field::Date(created));
         }
@@ -381,13 +461,20 @@ impl StructuredObject for OleFile {
         }
 
         let doc = self.document();
-        attrs.insert(Text::Borrowed("ole.document_type"), Field::Text(Text::Owned(doc.format().format.to_string())));
+        attrs.insert(
+            Text::Borrowed("ole.document_type"),
+            Field::Text(Text::Owned(doc.format().format.to_string())),
+        );
         if let Some(summary) = doc.summary_information() {
             insert_text(&mut attrs, "ole.author", &summary.author);
             insert_text(&mut attrs, "ole.last_saved_by", &summary.last_saved_by);
             insert_text(&mut attrs, "ole.title", &summary.title);
             insert_text(&mut attrs, "ole.template", &summary.template);
-            insert_text(&mut attrs, "ole.application_name", &summary.application_name);
+            insert_text(
+                &mut attrs,
+                "ole.application_name",
+                &summary.application_name,
+            );
             insert_text(&mut attrs, "ole.revision", &summary.revision_number);
             if let Some(created) = summary.created {
                 attrs.insert(Text::Borrowed("ole.created"), Field::Date(created));
@@ -396,7 +483,10 @@ impl StructuredObject for OleFile {
                 attrs.insert(Text::Borrowed("ole.last_saved"), Field::Date(last_saved));
             }
             if let Some(last_printed) = summary.last_printed {
-                attrs.insert(Text::Borrowed("ole.last_printed"), Field::Date(last_printed));
+                attrs.insert(
+                    Text::Borrowed("ole.last_printed"),
+                    Field::Date(last_printed),
+                );
             }
         }
         if let Some(doc_summary) = doc.document_summary_information() {
@@ -405,16 +495,25 @@ impl StructuredObject for OleFile {
         match doc.encryption() {
             crate::crypto::EncryptionState::NotEncrypted => {
                 attrs.insert(Text::Borrowed("ole.is_encrypted"), Field::U64(0));
-                attrs.insert(Text::Borrowed("ole.encryption"), Field::Text(Text::Borrowed("none")));
+                attrs.insert(
+                    Text::Borrowed("ole.encryption"),
+                    Field::Text(Text::Borrowed("none")),
+                );
             }
             crate::crypto::EncryptionState::Encrypted { scheme, .. } => {
                 attrs.insert(Text::Borrowed("ole.is_encrypted"), Field::U64(1));
-                attrs.insert(Text::Borrowed("ole.encryption"), Field::Text(Text::Owned(scheme.clone())));
+                attrs.insert(
+                    Text::Borrowed("ole.encryption"),
+                    Field::Text(Text::Owned(scheme.clone())),
+                );
             }
             // Deliberately no `ole.is_encrypted` here: "unchecked" is not the same claim as
             // "confirmed not encrypted", and a boolean field cannot express the difference.
             crate::crypto::EncryptionState::NotChecked { .. } => {
-                attrs.insert(Text::Borrowed("ole.encryption"), Field::Text(Text::Borrowed("not_checked")));
+                attrs.insert(
+                    Text::Borrowed("ole.encryption"),
+                    Field::Text(Text::Borrowed("not_checked")),
+                );
             }
         }
         attrs
@@ -431,17 +530,29 @@ pub(crate) struct OleStreamFile {
 }
 
 impl OleStreamFile {
-    pub(crate) fn stream(bytes: Vec<u8>, allocated: u64, idx: usize, entry: &DirectoryEntry) -> Self {
+    pub(crate) fn stream(
+        bytes: Vec<u8>,
+        allocated: u64,
+        idx: usize,
+        entry: &DirectoryEntry,
+    ) -> Self {
         let size = bytes.len() as u64;
         let metadata = VMetadata {
             file_type: VFileType::File,
             size,
-            allocated_size: if allocated != size { Some(allocated) } else { None },
+            allocated_size: if allocated != size {
+                Some(allocated)
+            } else {
+                None
+            },
             times: entry.macb(),
             id: Some(FileId::from_raw(idx as u128)),
             attributes: FileAttributes::empty(),
         };
-        Self { cursor: Cursor::new(bytes), metadata }
+        Self {
+            cursor: Cursor::new(bytes),
+            metadata,
+        }
     }
 
     pub(crate) fn storage(idx: usize, entry: &DirectoryEntry) -> Self {
@@ -453,7 +564,10 @@ impl OleStreamFile {
             id: Some(FileId::from_raw(idx as u128)),
             attributes: FileAttributes::DIRECTORY,
         };
-        Self { cursor: Cursor::new(Vec::new()), metadata }
+        Self {
+            cursor: Cursor::new(Vec::new()),
+            metadata,
+        }
     }
 }
 
@@ -483,7 +597,13 @@ pub(crate) mod tests_support {
 
     /// A hand-built `DirectoryEntry` for synthetic directory-tree tests, shared across this
     /// crate's test modules.
-    pub(crate) fn entry(name: &str, object_type: ObjectType, left: u32, right: u32, child: u32) -> DirectoryEntry {
+    pub(crate) fn entry(
+        name: &str,
+        object_type: ObjectType,
+        left: u32,
+        right: u32,
+        child: u32,
+    ) -> DirectoryEntry {
         DirectoryEntry {
             name: name.to_string(),
             object_type,
@@ -531,7 +651,9 @@ pub(crate) mod tests_support {
     /// one directory sector holding just the Root Entry (no streams). Used to exercise
     /// [`super::OleFile::parse`] end-to-end without needing a real-world fixture.
     pub(crate) fn minimal_ole_bytes() -> Vec<u8> {
-        use crate::consts::{ENDOFCHAIN, FREESECT, HEADER_DIFAT_ENTRIES, HEADER_SIZE, OLE_SIGNATURE};
+        use crate::consts::{
+            ENDOFCHAIN, FREESECT, HEADER_DIFAT_ENTRIES, HEADER_SIZE, OLE_SIGNATURE,
+        };
 
         // Layout: [header][FAT sector = sector 0][directory sector = sector 1]
         let mut data = vec![0u8; HEADER_SIZE + 512 * 2];
@@ -550,17 +672,20 @@ pub(crate) mod tests_support {
         let difat_start = 76;
         for i in 0..HEADER_DIFAT_ENTRIES {
             let value = if i == 0 { 0u32 } else { FREESECT };
-            data[difat_start + i * 4..difat_start + i * 4 + 4].copy_from_slice(&value.to_le_bytes());
+            data[difat_start + i * 4..difat_start + i * 4 + 4]
+                .copy_from_slice(&value.to_le_bytes());
         }
 
         // --- FAT sector (sector 0, right after the header) ---
         let fat_sector_start = HEADER_SIZE;
         // sector 0 (itself, the FAT) -> FATSECT marker
-        data[fat_sector_start..fat_sector_start + 4].copy_from_slice(&crate::consts::FATSECT.to_le_bytes());
+        data[fat_sector_start..fat_sector_start + 4]
+            .copy_from_slice(&crate::consts::FATSECT.to_le_bytes());
         // sector 1 (the directory) -> ENDOFCHAIN
         data[fat_sector_start + 4..fat_sector_start + 8].copy_from_slice(&ENDOFCHAIN.to_le_bytes());
         for i in 2..(512 / 4) {
-            data[fat_sector_start + i * 4..fat_sector_start + i * 4 + 4].copy_from_slice(&FREESECT.to_le_bytes());
+            data[fat_sector_start + i * 4..fat_sector_start + i * 4 + 4]
+                .copy_from_slice(&FREESECT.to_le_bytes());
         }
 
         // --- directory sector (sector 1) : one Root Entry, rest unallocated ---
@@ -569,11 +694,15 @@ pub(crate) mod tests_support {
         let utf16: Vec<u8> = name.encode_utf16().flat_map(|u| u.to_le_bytes()).collect();
         data[dir_sector_start..dir_sector_start + utf16.len()].copy_from_slice(&utf16);
         let name_length = (utf16.len() + 2) as u16;
-        data[dir_sector_start + 64..dir_sector_start + 66].copy_from_slice(&name_length.to_le_bytes());
+        data[dir_sector_start + 64..dir_sector_start + 66]
+            .copy_from_slice(&name_length.to_le_bytes());
         data[dir_sector_start + 66] = 5; // RootStorage
-        data[dir_sector_start + 68..dir_sector_start + 72].copy_from_slice(&crate::consts::NOSTREAM.to_le_bytes());
-        data[dir_sector_start + 72..dir_sector_start + 76].copy_from_slice(&crate::consts::NOSTREAM.to_le_bytes());
-        data[dir_sector_start + 76..dir_sector_start + 80].copy_from_slice(&crate::consts::NOSTREAM.to_le_bytes());
+        data[dir_sector_start + 68..dir_sector_start + 72]
+            .copy_from_slice(&crate::consts::NOSTREAM.to_le_bytes());
+        data[dir_sector_start + 72..dir_sector_start + 76]
+            .copy_from_slice(&crate::consts::NOSTREAM.to_le_bytes());
+        data[dir_sector_start + 76..dir_sector_start + 80]
+            .copy_from_slice(&crate::consts::NOSTREAM.to_le_bytes());
         // start_sector (offset 116) / stream_size (offset 120) left as 0 -> empty mini stream
 
         data
@@ -618,13 +747,16 @@ mod tests {
         // Stamp a non-zero CLSID onto the root entry (offset 96 within the directory sector).
         let dir_sector_start = crate::consts::HEADER_SIZE + 512;
         let clsid: [u8; 16] = [
-            0x06, 0x09, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0xC0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x46,
+            0x06, 0x09, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0xC0, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x46,
         ];
         data[dir_sector_start + 80..dir_sector_start + 96].copy_from_slice(&clsid);
         let ole = OleFile::parse(data).unwrap();
         let attrs = ole.attributes();
         match attrs.get(&Text::Borrowed("ole.root_clsid")) {
-            Some(Field::Text(t)) => assert_eq!(t.as_ref(), "{00020906-0000-0000-C000-000000000046}"),
+            Some(Field::Text(t)) => {
+                assert_eq!(t.as_ref(), "{00020906-0000-0000-C000-000000000046}")
+            }
             other => panic!("expected a canonical GUID string, got {other:?}"),
         }
     }
@@ -632,7 +764,10 @@ mod tests {
     #[test]
     fn attributes_omit_root_clsid_when_null() {
         let ole = OleFile::parse(minimal_ole_bytes()).unwrap();
-        assert!(!ole.attributes().contains_key(&Text::Borrowed("ole.root_clsid")));
+        assert!(
+            !ole.attributes()
+                .contains_key(&Text::Borrowed("ole.root_clsid"))
+        );
     }
 
     #[test]
@@ -666,7 +801,9 @@ mod tests {
         ];
         let paths = tree::build_paths(&entries).unwrap();
         let ole = test_ole_file(entries, paths);
-        let file = ole.open_child(&LocatorSegment::Stream(CompactString::from("Storage"))).unwrap();
+        let file = ole
+            .open_child(&LocatorSegment::Stream(CompactString::from("Storage")))
+            .unwrap();
         let meta = file.metadata().unwrap();
         assert_eq!(meta.file_type, VFileType::Directory);
         assert_eq!(meta.size, 0);
@@ -726,7 +863,13 @@ mod tests {
             test_entry("A", ObjectType::Storage, u32::MAX, 2, 3),
             test_entry("A0", ObjectType::Storage, u32::MAX, u32::MAX, 4),
             test_entry("Inside", ObjectType::Stream, u32::MAX, u32::MAX, u32::MAX),
-            test_entry("AlsoInside", ObjectType::Stream, u32::MAX, u32::MAX, u32::MAX),
+            test_entry(
+                "AlsoInside",
+                ObjectType::Stream,
+                u32::MAX,
+                u32::MAX,
+                u32::MAX,
+            ),
         ];
         let paths = tree::build_paths(&entries).unwrap();
         let ole = test_ole_file(entries, paths);
@@ -756,14 +899,29 @@ mod tests {
     #[test]
     fn unallocated_entries_surfaces_named_free_slots_but_not_empty_ones() {
         let entries = vec![
-            test_entry("Root Entry", ObjectType::RootStorage, u32::MAX, u32::MAX, u32::MAX),
-            test_entry("DeletedStream", ObjectType::Unallocated, u32::MAX, u32::MAX, u32::MAX),
+            test_entry(
+                "Root Entry",
+                ObjectType::RootStorage,
+                u32::MAX,
+                u32::MAX,
+                u32::MAX,
+            ),
+            test_entry(
+                "DeletedStream",
+                ObjectType::Unallocated,
+                u32::MAX,
+                u32::MAX,
+                u32::MAX,
+            ),
             test_entry("", ObjectType::Unallocated, u32::MAX, u32::MAX, u32::MAX),
         ];
         let paths = tree::build_paths(&entries).unwrap();
         let ole = test_ole_file(entries, paths);
 
-        let found: Vec<(usize, &str)> = ole.unallocated_entries().map(|(idx, e)| (idx, e.name.as_str())).collect();
+        let found: Vec<(usize, &str)> = ole
+            .unallocated_entries()
+            .map(|(idx, e)| (idx, e.name.as_str()))
+            .collect();
         assert_eq!(found, vec![(1, "DeletedStream")]);
     }
 
@@ -780,7 +938,13 @@ mod tests {
         }
     }
 
-    fn test_entry(name: &str, object_type: ObjectType, left: u32, right: u32, child: u32) -> DirectoryEntry {
+    fn test_entry(
+        name: &str,
+        object_type: ObjectType,
+        left: u32,
+        right: u32,
+        child: u32,
+    ) -> DirectoryEntry {
         DirectoryEntry {
             name: name.to_string(),
             object_type,

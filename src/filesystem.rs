@@ -71,7 +71,9 @@ impl OleFileSystem {
 
         let mut folded: BTreeMap<String, FoldedTarget> = BTreeMap::new();
         for (path, _kind) in ole.paths() {
-            let Some(idx) = ole.path_index(path) else { continue };
+            let Some(idx) = ole.path_index(path) else {
+                continue;
+            };
             if hidden.contains_key(&idx) {
                 continue;
             }
@@ -82,7 +84,11 @@ impl OleFileSystem {
                 .or_insert_with(|| FoldedTarget::Unique(path.to_string(), idx));
         }
 
-        Self { ole, hidden, folded }
+        Self {
+            ole,
+            hidden,
+            folded,
+        }
     }
 
     /// The underlying parsed container.
@@ -102,7 +108,9 @@ impl OleFileSystem {
     /// entries remain fully visible through [`OleFile::entries`]; they are simply never
     /// `open()`/`metadata()`/`read_dir()`-addressable through this `FileSystem`.
     pub fn name_anomalies(&self) -> impl Iterator<Item = (usize, &DirectoryEntry, NameAnomaly)> {
-        self.hidden.iter().map(|(&idx, &anomaly)| (idx, &self.ole.entries()[idx], anomaly))
+        self.hidden
+            .iter()
+            .map(|(&idx, &anomaly)| (idx, &self.ole.entries()[idx], anomaly))
     }
 
     fn is_addressable(&self, idx: usize) -> bool {
@@ -156,7 +164,11 @@ impl OleFileSystem {
         Ok(VMetadata {
             file_type: VFileType::File,
             size: declared,
-            allocated_size: if allocated != declared { Some(allocated) } else { None },
+            allocated_size: if allocated != declared {
+                Some(allocated)
+            } else {
+                None
+            },
             times: entry.macb(),
             id: Some(FileId::from_raw(idx as u128)),
             attributes: FileAttributes::empty(),
@@ -193,35 +205,65 @@ fn fold_case(s: &str) -> String {
 
 impl FileSystem for OleFileSystem {
     fn open(&self, path: &FPath) -> ForensicResult<Box<dyn VirtualFile>> {
-        let (real_path, idx) = self.lookup(path).ok_or_else(|| ForensicError::path_not_found(path.to_string()))?;
+        let (real_path, idx) = self
+            .lookup(path)
+            .ok_or_else(|| ForensicError::path_not_found(path.to_string()))?;
         if idx == 0 || self.ole.entries()[idx].is_storage() {
-            let entry = if idx == 0 { self.ole.root_entry() } else { &self.ole.entries()[idx] };
+            let entry = if idx == 0 {
+                self.ole.root_entry()
+            } else {
+                &self.ole.entries()[idx]
+            };
             return Ok(Box::new(OleStreamFile::storage(idx, entry)));
         }
         let (bytes, allocated) = self.ole.read_stream_with_allocation(&real_path)?;
-        Ok(Box::new(OleStreamFile::stream(bytes, allocated, idx, &self.ole.entries()[idx])))
+        Ok(Box::new(OleStreamFile::stream(
+            bytes,
+            allocated,
+            idx,
+            &self.ole.entries()[idx],
+        )))
     }
 
     fn metadata(&self, path: &FPath) -> ForensicResult<VMetadata> {
-        let (real_path, idx) = self.lookup(path).ok_or_else(|| ForensicError::path_not_found(path.to_string()))?;
+        let (real_path, idx) = self
+            .lookup(path)
+            .ok_or_else(|| ForensicError::path_not_found(path.to_string()))?;
         self.metadata_for(&real_path, idx)
     }
 
-    fn read_dir(&self, path: &FPath) -> ForensicResult<Box<dyn Iterator<Item = ForensicResult<DirEntry>> + '_>> {
-        let (real_path, idx) = self.lookup(path).ok_or_else(|| ForensicError::path_not_found(path.to_string()))?;
+    fn read_dir(
+        &self,
+        path: &FPath,
+    ) -> ForensicResult<Box<dyn Iterator<Item = ForensicResult<DirEntry>> + '_>> {
+        let (real_path, idx) = self
+            .lookup(path)
+            .ok_or_else(|| ForensicError::path_not_found(path.to_string()))?;
         if idx != 0 && self.ole.entries()[idx].is_stream() {
-            return Err(ForensicError::invalid_format("ole_filesystem", format!("'{real_path}' is a stream, not a storage")));
+            return Err(ForensicError::invalid_format(
+                "ole_filesystem",
+                format!("'{real_path}' is a stream, not a storage"),
+            ));
         }
         let entries: Vec<ForensicResult<DirEntry>> = self
             .ole
             .children_iter(&real_path)
             .filter(|(child_path, _)| {
-                self.ole.path_index(child_path).is_some_and(|child_idx| self.is_addressable(child_idx))
+                self.ole
+                    .path_index(child_path)
+                    .is_some_and(|child_idx| self.is_addressable(child_idx))
             })
             .map(|(child_path, _kind)| {
-                let child_idx = self.ole.path_index(child_path).expect("just filtered on this existing");
+                let child_idx = self
+                    .ole
+                    .path_index(child_path)
+                    .expect("just filtered on this existing");
                 let meta = self.metadata_for(child_path, child_idx)?;
-                Ok(DirEntry { path: FPathBuf::from(child_path), file_type: meta.file_type, metadata: Some(meta) })
+                Ok(DirEntry {
+                    path: FPathBuf::from(child_path),
+                    file_type: meta.file_type,
+                    metadata: Some(meta),
+                })
             })
             .collect();
         Ok(Box::new(entries.into_iter()))
@@ -246,7 +288,12 @@ impl FileSystem for OleFileSystem {
 
 /// Inserts `key` only when `value` is `Some` -- the crate-wide rule (see `AGENTS.md`) that an
 /// absent fact is an omitted key, never a zero-filled or empty one.
-fn insert_opt<T>(attrs: &mut BTreeMap<Text, Field>, key: &'static str, value: Option<T>, to_field: impl FnOnce(T) -> Field) {
+fn insert_opt<T>(
+    attrs: &mut BTreeMap<Text, Field>,
+    key: &'static str,
+    value: Option<T>,
+    to_field: impl FnOnce(T) -> Field,
+) {
     if let Some(v) = value {
         attrs.insert(Text::Borrowed(key), to_field(v));
     }
@@ -268,7 +315,9 @@ impl PathAttributes for OleFileSystem {
     /// [`FileSystem::metadata`] reports it -- this method is never a cheaper way to probe
     /// existence than `metadata` already is.
     fn attributes(&self, path: &FPath) -> ForensicResult<BTreeMap<Text, Field>> {
-        let (real_path, idx) = self.lookup(path).ok_or_else(|| ForensicError::path_not_found(path.to_string()))?;
+        let (real_path, idx) = self
+            .lookup(path)
+            .ok_or_else(|| ForensicError::path_not_found(path.to_string()))?;
 
         if idx == 0 {
             let mut attrs = self.ole.attributes();
@@ -278,7 +327,10 @@ impl PathAttributes for OleFileSystem {
                 Field::U64(self.ole.children_iter("").count() as u64),
             );
             if !self.hidden.is_empty() {
-                attrs.insert(Text::Borrowed("ole.hidden_entry_count"), Field::U64(self.hidden.len() as u64));
+                attrs.insert(
+                    Text::Borrowed("ole.hidden_entry_count"),
+                    Field::U64(self.hidden.len() as u64),
+                );
             }
             return Ok(attrs);
         }
@@ -288,40 +340,93 @@ impl PathAttributes for OleFileSystem {
         let leaf = real_path.rsplit('/').next().unwrap_or(&real_path);
 
         if entry.is_storage() {
-            attrs.insert(Text::Borrowed("ole.storage.path"), Field::Text(Text::Owned(real_path.clone())));
-            attrs.insert(Text::Borrowed("ole.storage.name"), Field::Text(Text::Owned(leaf.to_string())));
-            attrs.insert(Text::Borrowed("ole.storage.directory_index"), Field::U64(idx as u64));
+            attrs.insert(
+                Text::Borrowed("ole.storage.path"),
+                Field::Text(Text::Owned(real_path.clone())),
+            );
+            attrs.insert(
+                Text::Borrowed("ole.storage.name"),
+                Field::Text(Text::Owned(leaf.to_string())),
+            );
+            attrs.insert(
+                Text::Borrowed("ole.storage.directory_index"),
+                Field::U64(idx as u64),
+            );
             attrs.insert(
                 Text::Borrowed("ole.storage.child_count"),
                 Field::U64(self.ole.children_iter(&real_path).count() as u64),
             );
-            insert_opt(&mut attrs, "ole.storage.clsid", entry.clsid_string(), |v| Field::Text(Text::Owned(v)));
-            insert_opt(&mut attrs, "ole.storage.created", entry.created, Field::Date);
-            insert_opt(&mut attrs, "ole.storage.modified", entry.modified, Field::Date);
+            insert_opt(&mut attrs, "ole.storage.clsid", entry.clsid_string(), |v| {
+                Field::Text(Text::Owned(v))
+            });
+            insert_opt(
+                &mut attrs,
+                "ole.storage.created",
+                entry.created,
+                Field::Date,
+            );
+            insert_opt(
+                &mut attrs,
+                "ole.storage.modified",
+                entry.modified,
+                Field::Date,
+            );
         } else {
-            attrs.insert(Text::Borrowed("ole.stream.path"), Field::Text(Text::Owned(real_path.clone())));
-            attrs.insert(Text::Borrowed("ole.stream.name"), Field::Text(Text::Owned(leaf.to_string())));
-            attrs.insert(Text::Borrowed("ole.stream.size"), Field::U64(entry.stream_size));
-            attrs.insert(Text::Borrowed("ole.stream.directory_index"), Field::U64(idx as u64));
-            let in_mini_fat = (entry.stream_size as usize) < self.ole.header().mini_stream_cutoff_size;
-            attrs.insert(Text::Borrowed("ole.stream.in_mini_fat"), Field::U64(in_mini_fat as u64));
+            attrs.insert(
+                Text::Borrowed("ole.stream.path"),
+                Field::Text(Text::Owned(real_path.clone())),
+            );
+            attrs.insert(
+                Text::Borrowed("ole.stream.name"),
+                Field::Text(Text::Owned(leaf.to_string())),
+            );
+            attrs.insert(
+                Text::Borrowed("ole.stream.size"),
+                Field::U64(entry.stream_size),
+            );
+            attrs.insert(
+                Text::Borrowed("ole.stream.directory_index"),
+                Field::U64(idx as u64),
+            );
+            let in_mini_fat =
+                (entry.stream_size as usize) < self.ole.header().mini_stream_cutoff_size;
+            attrs.insert(
+                Text::Borrowed("ole.stream.in_mini_fat"),
+                Field::U64(in_mini_fat as u64),
+            );
             if let Ok(allocated) = self.ole.stream_allocation(&real_path) {
                 if allocated > entry.stream_size {
                     // The common case: the last sector in the chain pads out past the declared
                     // size. The padding itself is evidence, not waste -- surfaced as slack.
-                    attrs.insert(Text::Borrowed("ole.stream.allocated_size"), Field::U64(allocated));
-                    attrs.insert(Text::Borrowed("ole.stream.slack_size"), Field::U64(allocated - entry.stream_size));
+                    attrs.insert(
+                        Text::Borrowed("ole.stream.allocated_size"),
+                        Field::U64(allocated),
+                    );
+                    attrs.insert(
+                        Text::Borrowed("ole.stream.slack_size"),
+                        Field::U64(allocated - entry.stream_size),
+                    );
                 } else if allocated < entry.stream_size {
                     // The chain is shorter than the entry claims -- a truncated/corrupt stream,
                     // a materially different fact from slack. Reported as its own flag rather
                     // than a "negative slack" that a naive subtraction would otherwise produce.
-                    attrs.insert(Text::Borrowed("ole.stream.allocated_size"), Field::U64(allocated));
+                    attrs.insert(
+                        Text::Borrowed("ole.stream.allocated_size"),
+                        Field::U64(allocated),
+                    );
                     attrs.insert(Text::Borrowed("ole.stream.truncated"), Field::U64(1));
                 }
             }
-            insert_opt(&mut attrs, "ole.stream.clsid", entry.clsid_string(), |v| Field::Text(Text::Owned(v)));
+            insert_opt(&mut attrs, "ole.stream.clsid", entry.clsid_string(), |v| {
+                Field::Text(Text::Owned(v))
+            });
             insert_opt(&mut attrs, "ole.stream.created", entry.created, Field::Date);
-            insert_opt(&mut attrs, "ole.stream.modified", entry.modified, Field::Date);
+            insert_opt(
+                &mut attrs,
+                "ole.stream.modified",
+                entry.modified,
+                Field::Date,
+            );
         }
         Ok(attrs)
     }
@@ -335,10 +440,18 @@ mod tests {
 
     #[test]
     fn root_aliases_all_resolve_to_the_root_storage() {
-        let entries = vec![test_entry("Root Entry", ObjectType::RootStorage, u32::MAX, u32::MAX, u32::MAX)];
+        let entries = vec![test_entry(
+            "Root Entry",
+            ObjectType::RootStorage,
+            u32::MAX,
+            u32::MAX,
+            u32::MAX,
+        )];
         let fs = OleFileSystem::new(test_ole_file(entries));
         for alias in ["", "/", "\\", ".", "C:"] {
-            let meta = fs.metadata(FPath::new(alias)).unwrap_or_else(|e| panic!("'{alias}' should resolve to root: {e}"));
+            let meta = fs
+                .metadata(FPath::new(alias))
+                .unwrap_or_else(|e| panic!("'{alias}' should resolve to root: {e}"));
             assert_eq!(meta.file_type, VFileType::Directory, "'{alias}'");
         }
     }
@@ -352,11 +465,18 @@ mod tests {
         ];
         let fs = OleFileSystem::new(test_ole_file(entries));
 
-        let root: Vec<String> = fs.read_dir(FPath::new("")).unwrap().map(|e| e.unwrap().path.to_string()).collect();
+        let root: Vec<String> = fs
+            .read_dir(FPath::new(""))
+            .unwrap()
+            .map(|e| e.unwrap().path.to_string())
+            .collect();
         assert_eq!(root, vec!["Storage"]);
 
-        let inner: Vec<String> =
-            fs.read_dir(FPath::new("Storage")).unwrap().map(|e| e.unwrap().path.to_string()).collect();
+        let inner: Vec<String> = fs
+            .read_dir(FPath::new("Storage"))
+            .unwrap()
+            .map(|e| e.unwrap().path.to_string())
+            .collect();
         assert_eq!(inner, vec!["Storage/Stream"]);
 
         let meta = fs.metadata(FPath::new("Storage")).unwrap();
@@ -377,7 +497,13 @@ mod tests {
 
     #[test]
     fn open_a_missing_path_errors() {
-        let entries = vec![test_entry("Root Entry", ObjectType::RootStorage, u32::MAX, u32::MAX, u32::MAX)];
+        let entries = vec![test_entry(
+            "Root Entry",
+            ObjectType::RootStorage,
+            u32::MAX,
+            u32::MAX,
+            u32::MAX,
+        )];
         let fs = OleFileSystem::new(test_ole_file(entries));
         assert!(fs.open(FPath::new("does-not-exist")).is_err());
     }
@@ -386,11 +512,20 @@ mod tests {
     fn case_insensitive_lookup_resolves_via_the_fold_fallback() {
         let entries = vec![
             test_entry("Root Entry", ObjectType::RootStorage, u32::MAX, u32::MAX, 1),
-            test_entry("WordDocument", ObjectType::Stream, u32::MAX, u32::MAX, u32::MAX),
+            test_entry(
+                "WordDocument",
+                ObjectType::Stream,
+                u32::MAX,
+                u32::MAX,
+                u32::MAX,
+            ),
         ];
         let fs = OleFileSystem::new(test_ole_file(entries));
         assert!(fs.metadata(FPath::new("WordDocument")).is_ok());
-        assert!(fs.metadata(FPath::new("worddocument")).is_ok(), "exact-case-insensitive per MS-CFB 2.6.4");
+        assert!(
+            fs.metadata(FPath::new("worddocument")).is_ok(),
+            "exact-case-insensitive per MS-CFB 2.6.4"
+        );
         assert!(fs.metadata(FPath::new("WORDDOCUMENT")).is_ok());
     }
 
@@ -407,7 +542,10 @@ mod tests {
         let fs = OleFileSystem::new(test_ole_file(entries));
         assert!(fs.metadata(FPath::new("stream")).is_ok());
         assert!(fs.metadata(FPath::new("Stream")).is_ok());
-        assert!(fs.metadata(FPath::new("STREAM")).is_err(), "ambiguous fold must not guess");
+        assert!(
+            fs.metadata(FPath::new("STREAM")).is_err(),
+            "ambiguous fold must not guess"
+        );
     }
 
     #[test]
@@ -419,8 +557,15 @@ mod tests {
         let fs = OleFileSystem::new(test_ole_file(entries));
 
         // Never openable, never listed.
-        let root: Vec<String> = fs.read_dir(FPath::new("")).unwrap().map(|e| e.unwrap().path.to_string()).collect();
-        assert!(root.is_empty(), "the anomalous entry must not appear in a listing: {root:?}");
+        let root: Vec<String> = fs
+            .read_dir(FPath::new(""))
+            .unwrap()
+            .map(|e| e.unwrap().path.to_string())
+            .collect();
+        assert!(
+            root.is_empty(),
+            "the anomalous entry must not appear in a listing: {root:?}"
+        );
 
         // But visible as a reported anomaly, with the real on-disk name preserved verbatim.
         let anomalies: Vec<_> = fs.name_anomalies().collect();

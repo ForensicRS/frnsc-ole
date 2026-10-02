@@ -64,9 +64,10 @@ pub struct DocumentSummaryInformation {
 impl DocumentSummaryInformation {
     pub fn from_section(section: &PropertySection) -> Self {
         let doc_parts = match section.get(PIDDSI_DOCPARTS) {
-            Some(super::variant::PropertyValue::Vector(values)) => {
-                values.iter().filter_map(|v| v.as_str().map(str::to_string)).collect()
-            }
+            Some(super::variant::PropertyValue::Vector(values)) => values
+                .iter()
+                .filter_map(|v| v.as_str().map(str::to_string))
+                .collect(),
             _ => Vec::new(),
         };
         Self {
@@ -119,7 +120,10 @@ mod tests {
         ]);
         let s = section(&[(PIDDSI_DOCPARTS, vec_value)]);
         let info = DocumentSummaryInformation::from_section(&s);
-        assert_eq!(info.doc_parts, vec!["Sheet1".to_string(), "Sheet2".to_string()]);
+        assert_eq!(
+            info.doc_parts,
+            vec!["Sheet1".to_string(), "Sheet2".to_string()]
+        );
     }
 
     #[test]

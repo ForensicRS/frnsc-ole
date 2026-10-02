@@ -64,7 +64,9 @@ impl SummaryInformation {
             template: section.text(PIDSI_TEMPLATE),
             last_saved_by: section.text(PIDSI_LASTAUTHOR),
             revision_number: section.text(PIDSI_REVNUMBER),
-            total_edit_time_seconds: section.filetime_raw(PIDSI_EDITTIME).map(|t| t / HUNDRED_NS_PER_SECOND),
+            total_edit_time_seconds: section
+                .filetime_raw(PIDSI_EDITTIME)
+                .map(|t| t / HUNDRED_NS_PER_SECOND),
             last_printed: section.filetime(PIDSI_LASTPRINTED),
             created: section.filetime(PIDSI_CREATE_DTM),
             last_saved: section.filetime(PIDSI_LASTSAVE_DTM),
@@ -72,7 +74,9 @@ impl SummaryInformation {
             word_count: section.u64(PIDSI_WORDCOUNT),
             char_count: section.u64(PIDSI_CHARCOUNT),
             application_name: section.text(PIDSI_APPNAME),
-            security: section.i32(PIDSI_SECURITY).map(|bits| DocSecurity::from_bits(bits as u32)),
+            security: section
+                .i32(PIDSI_SECURITY)
+                .map(|bits| DocSecurity::from_bits(bits as u32)),
         }
     }
 }
@@ -149,7 +153,9 @@ impl MsiSummaryInformation {
             minimum_installer_version: section.u64(PIDSI_PAGECOUNT),
             word_count_flags: section.u64(PIDSI_WORDCOUNT),
             application_name: section.text(PIDSI_APPNAME),
-            security: section.i32(PIDSI_SECURITY).map(|bits| DocSecurity::from_bits(bits as u32)),
+            security: section
+                .i32(PIDSI_SECURITY)
+                .map(|bits| DocSecurity::from_bits(bits as u32)),
         }
     }
 }
@@ -173,7 +179,13 @@ mod tests {
     #[test]
     fn total_edit_time_is_exposed_as_a_duration_not_a_timestamp() {
         // 600,000,000 ticks of 100ns = 60 seconds.
-        let s = section(&[(PIDSI_EDITTIME, PropertyValue::FileTime { raw: 600_000_000, timestamp: None })]);
+        let s = section(&[(
+            PIDSI_EDITTIME,
+            PropertyValue::FileTime {
+                raw: 600_000_000,
+                timestamp: None,
+            },
+        )]);
         let info = SummaryInformation::from_section(&s);
         assert_eq!(info.total_edit_time_seconds, Some(60));
     }
@@ -191,6 +203,9 @@ mod tests {
     fn summary_and_msi_projections_disagree_on_pid_14_by_design() {
         let s = section(&[(PIDSI_PAGECOUNT, PropertyValue::I4(200))]);
         assert_eq!(SummaryInformation::from_section(&s).page_count, Some(200));
-        assert_eq!(MsiSummaryInformation::from_section(&s).minimum_installer_version, Some(200));
+        assert_eq!(
+            MsiSummaryInformation::from_section(&s).minimum_installer_version,
+            Some(200)
+        );
     }
 }

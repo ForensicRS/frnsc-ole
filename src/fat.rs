@@ -3,8 +3,8 @@
 
 use std::collections::HashSet;
 
-use forensic_rs::{ensure_buffer_range, ensure_format};
 use forensic_rs::prelude::*;
+use forensic_rs::{ensure_buffer_range, ensure_format};
 
 use crate::chain::follow_chain;
 use crate::consts::MAX_REGULAR_SECTOR;
@@ -51,7 +51,11 @@ pub fn build_fat(data: &[u8], header: &Header) -> ForensicResult<Vec<u32>> {
 
     if let Some(first) = header.first_difat_sector {
         let entries_per_sector = header.sector_size / 4;
-        ensure_format!(entries_per_sector > 1, "ole_difat", "sector too small to hold a DIFAT chain link");
+        ensure_format!(
+            entries_per_sector > 1,
+            "ole_difat",
+            "sector too small to hold a DIFAT chain link"
+        );
         let mut visited = HashSet::new();
         let mut current = first;
         loop {
@@ -95,8 +99,15 @@ pub fn build_fat(data: &[u8], header: &Header) -> ForensicResult<Vec<u32>> {
 
 /// Reads a whole stream's bytes by following its sector chain through `fat`, starting at
 /// `start_sector`.
-pub fn read_stream_chain(data: &[u8], fat: &[u32], start_sector: u32, sector_size: usize) -> ForensicResult<Vec<u8>> {
-    follow_chain(fat, start_sector, |sector_num| read_sector(data, sector_num, sector_size))
+pub fn read_stream_chain(
+    data: &[u8],
+    fat: &[u32],
+    start_sector: u32,
+    sector_size: usize,
+) -> ForensicResult<Vec<u8>> {
+    follow_chain(fat, start_sector, |sector_num| {
+        read_sector(data, sector_num, sector_size)
+    })
 }
 
 #[cfg(test)]
@@ -104,7 +115,10 @@ mod tests {
     use super::*;
     use crate::consts::{ENDOFCHAIN, FREESECT, HEADER_SIZE};
 
-    fn header_with_difat(sector_size: usize, difat: [u32; crate::consts::HEADER_DIFAT_ENTRIES]) -> Header {
+    fn header_with_difat(
+        sector_size: usize,
+        difat: [u32; crate::consts::HEADER_DIFAT_ENTRIES],
+    ) -> Header {
         Header {
             major_version: 3,
             minor_version: 0,

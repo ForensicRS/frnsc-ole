@@ -56,10 +56,12 @@ impl MapStreams {
 #[cfg(test)]
 impl CfbStreams for MapStreams {
     fn stream(&self, path: &str) -> ForensicResult<Vec<u8>> {
-        self.0
-            .get(path)
-            .cloned()
-            .ok_or_else(|| ForensicError::missing_data("ole_stream", CompactString::from(format!("no stream at '{path}'"))))
+        self.0.get(path).cloned().ok_or_else(|| {
+            ForensicError::missing_data(
+                "ole_stream",
+                CompactString::from(format!("no stream at '{path}'")),
+            )
+        })
     }
 
     fn has_stream(&self, path: &str) -> bool {

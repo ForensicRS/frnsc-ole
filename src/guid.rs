@@ -30,15 +30,20 @@ mod tests {
         // {00020906-0000-0000-C000-000000000046} -- Word.Document.8's CLSID, on the wire as
         // little-endian d1/d2/d3 followed by the eight big-endian-order trailing bytes.
         let bytes: [u8; 16] = [
-            0x06, 0x09, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0xC0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x46,
+            0x06, 0x09, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0xC0, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x46,
         ];
-        assert_eq!(format_clsid(&bytes), "{00020906-0000-0000-C000-000000000046}");
+        assert_eq!(
+            format_clsid(&bytes),
+            "{00020906-0000-0000-C000-000000000046}"
+        );
     }
 
     #[test]
     fn the_old_debug_array_format_is_not_what_this_produces() {
         let bytes: [u8; 16] = [
-            0x06, 0x09, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0xC0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x46,
+            0x06, 0x09, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0xC0, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x46,
         ];
         let old_style = format!("{bytes:02x?}");
         assert_ne!(format_clsid(&bytes), old_style);
@@ -46,6 +51,9 @@ mod tests {
 
     #[test]
     fn formats_an_all_zero_clsid_as_the_nil_guid() {
-        assert_eq!(format_clsid(&[0u8; 16]), "{00000000-0000-0000-0000-000000000000}");
+        assert_eq!(
+            format_clsid(&[0u8; 16]),
+            "{00000000-0000-0000-0000-000000000000}"
+        );
     }
 }

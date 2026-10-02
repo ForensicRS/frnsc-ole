@@ -31,6 +31,8 @@ pub enum EncryptionState {
 
 impl Default for EncryptionState {
     fn default() -> Self {
-        EncryptionState::NotChecked { reason: "not yet implemented" }
+        EncryptionState::NotChecked {
+            reason: "not yet implemented",
+        }
     }
 }

@@ -4,7 +4,7 @@
 
 use forensic_rs::prelude::*;
 
-use super::codepage::{decode_cp1252, CodePage};
+use super::codepage::{CodePage, decode_cp1252};
 
 // VARENUM values ([MS-OAUT] 2.2.7 / [MS-OLEPS] 2.15) this decoder recognizes.
 const VT_EMPTY: u16 = 0x0000;
@@ -40,14 +40,22 @@ impl AnsiString {
     pub fn decode(raw: &[u8], code_page: CodePage) -> Self {
         match code_page {
             CodePage::Known(1252) => match decode_cp1252(raw) {
-                Some(text) => AnsiString::Decoded { text, code_page: 1252 },
+                Some(text) => AnsiString::Decoded {
+                    text,
+                    code_page: 1252,
+                },
                 None => AnsiString::Undecodable { raw: raw.to_vec() },
             },
             CodePage::Known(65001) => match std::str::from_utf8(raw) {
-                Ok(text) => AnsiString::Decoded { text: text.to_string(), code_page: 65001 },
+                Ok(text) => AnsiString::Decoded {
+                    text: text.to_string(),
+                    code_page: 65001,
+                },
                 Err(_) => AnsiString::Undecodable { raw: raw.to_vec() },
             },
-            CodePage::Known(_) | CodePage::Unsupported(_) => AnsiString::Undecodable { raw: raw.to_vec() },
+            CodePage::Known(_) | CodePage::Unsupported(_) => {
+                AnsiString::Undecodable { raw: raw.to_vec() }
+            }
             CodePage::Absent => {
                 if raw.iter().all(|&b| b < 0x80) {
                     // `raw` is ASCII-only by the check above, so this can never fail.
@@ -92,14 +100,20 @@ pub enum PropertyValue {
     /// [`crate::directory::DirectoryEntry`]'s timestamps) or when a duration field's `raw`
     /// ticks would decode to a nonsensical instant; callers that know they have a duration
     /// field should read `raw` directly instead.
-    FileTime { raw: u64, timestamp: Option<ForensicTimestamp> },
+    FileTime {
+        raw: u64,
+        timestamp: Option<ForensicTimestamp>,
+    },
     Vector(Vec<PropertyValue>),
     /// A `VT_*` this crate does not decode. `raw` is a bounded diagnostic preview (see
     /// [`UNSUPPORTED_RAW_PREVIEW`]) of the bytes starting at this value, not a complete capture
     /// -- there is no way to know the value's true length without knowing its type, and
     /// capturing "everything left in the section" would multiply badly inside a `VT_VECTOR` of
     /// unsupported elements.
-    Unsupported { vt: u16, raw: Vec<u8> },
+    Unsupported {
+        vt: u16,
+        raw: Vec<u8>,
+    },
 }
 
 impl PropertyValue {
@@ -150,7 +164,10 @@ impl PropertyValue {
 
 /// Reads one full `TypedPropertyValue` (the `Type`/`Padding` header plus its value) at the
 /// reader's current position.
-pub fn read_typed_value(reader: &mut ByteReader, code_page: CodePage) -> ForensicResult<PropertyValue> {
+pub fn read_typed_value(
+    reader: &mut ByteReader,
+    code_page: CodePage,
+) -> ForensicResult<PropertyValue> {
     let vt = reader.read_u16_le()?;
     let _padding = reader.read_u16_le()?;
     if vt & VT_VECTOR != 0 {
@@ -176,7 +193,11 @@ pub fn read_typed_value(reader: &mut ByteReader, code_page: CodePage) -> Forensi
 
 /// Reads one value of a known base `VT_*` type (no `Type`/`Padding` header -- used both for a
 /// scalar property's value and for each element of a `VT_VECTOR`).
-fn read_value_of_type(reader: &mut ByteReader, vt: u16, code_page: CodePage) -> ForensicResult<PropertyValue> {
+fn read_value_of_type(
+    reader: &mut ByteReader,
+    vt: u16,
+    code_page: CodePage,
+) -> ForensicResult<PropertyValue> {
     match vt {
         VT_EMPTY => Ok(PropertyValue::Empty),
         VT_NULL => Ok(PropertyValue::Null),
@@ -189,25 +210,36 @@ fn read_value_of_type(reader: &mut ByteReader, vt: u16, code_page: CodePage) -> 
             match raw {
                 0x0000 => Ok(PropertyValue::Bool(false)),
                 0xFFFF => Ok(PropertyValue::Bool(true)),
-                other => Ok(PropertyValue::Unsupported { vt, raw: other.to_le_bytes().to_vec() }),
+                other => Ok(PropertyValue::Unsupported {
+                    vt,
+                    raw: other.to_le_bytes().to_vec(),
+                }),
             }
         }
         VT_LPSTR => {
             let len = reader.read_u32_le()? as usize;
             let bytes = reader.read_bytes(len)?;
             let trimmed = trim_trailing_nul(bytes);
-            Ok(PropertyValue::AnsiStr(AnsiString::decode(trimmed, code_page)))
+            Ok(PropertyValue::AnsiStr(AnsiString::decode(
+                trimmed, code_page,
+            )))
         }
         VT_LPWSTR => {
             let len_chars = reader.read_u32_le()? as usize;
             let bytes = reader.read_bytes(len_chars.saturating_mul(2))?;
             let mut sub = ByteReader::new(bytes);
             let text = sub.read_utf16le_string(bytes.len())?;
-            Ok(PropertyValue::UnicodeStr(text.trim_end_matches('\0').to_string()))
+            Ok(PropertyValue::UnicodeStr(
+                text.trim_end_matches('\0').to_string(),
+            ))
         }
         VT_FILETIME => {
             let raw = reader.read_u64_le()?;
-            let timestamp = if raw == 0 { None } else { Some(ForensicTimestamp::from_win_filetime(raw)) };
+            let timestamp = if raw == 0 {
+                None
+            } else {
+                Some(ForensicTimestamp::from_win_filetime(raw))
+            };
             Ok(PropertyValue::FileTime { raw, timestamp })
         }
         _ => {
@@ -217,7 +249,10 @@ fn read_value_of_type(reader: &mut ByteReader, vt: u16, code_page: CodePage) -> 
             // element would otherwise re-capture the same enormous remaining slice, multiplying
             // a single unsupported vector property into megabytes of duplicated raw bytes. A
             // small bounded diagnostic prefix is enough to identify the value without that.
-            let raw = reader.peek_bytes(reader.remaining().min(UNSUPPORTED_RAW_PREVIEW)).unwrap_or(&[]).to_vec();
+            let raw = reader
+                .peek_bytes(reader.remaining().min(UNSUPPORTED_RAW_PREVIEW))
+                .unwrap_or(&[])
+                .to_vec();
             Ok(PropertyValue::Unsupported { vt, raw })
         }
     }
@@ -246,9 +281,15 @@ mod tests {
 
     #[test]
     fn decodes_vt_i2_and_vt_i4() {
-        assert_eq!(read(&[0x02, 0x00, 0x00, 0x00, 0x2A, 0x00], CodePage::Absent), PropertyValue::I2(42));
         assert_eq!(
-            read(&[0x03, 0x00, 0x00, 0x00, 0x2A, 0x00, 0x00, 0x00], CodePage::Absent),
+            read(&[0x02, 0x00, 0x00, 0x00, 0x2A, 0x00], CodePage::Absent),
+            PropertyValue::I2(42)
+        );
+        assert_eq!(
+            read(
+                &[0x03, 0x00, 0x00, 0x00, 0x2A, 0x00, 0x00, 0x00],
+                CodePage::Absent
+            ),
             PropertyValue::I4(42)
         );
     }
@@ -257,7 +298,13 @@ mod tests {
     fn decodes_a_zero_filetime_as_none() {
         let mut bytes = vec![0x40, 0x00, 0x00, 0x00];
         bytes.extend_from_slice(&0u64.to_le_bytes());
-        assert_eq!(read(&bytes, CodePage::Absent), PropertyValue::FileTime { raw: 0, timestamp: None });
+        assert_eq!(
+            read(&bytes, CodePage::Absent),
+            PropertyValue::FileTime {
+                raw: 0,
+                timestamp: None
+            }
+        );
     }
 
     #[test]
@@ -275,10 +322,22 @@ mod tests {
         bytes.extend_from_slice(&2u32.to_le_bytes()); // count = 2
         // element 0: "ab" + NUL (3 chars)
         bytes.extend_from_slice(&3u32.to_le_bytes());
-        bytes.extend_from_slice("ab\0".encode_utf16().flat_map(|u| u.to_le_bytes()).collect::<Vec<u8>>().as_slice());
+        bytes.extend_from_slice(
+            "ab\0"
+                .encode_utf16()
+                .flat_map(|u| u.to_le_bytes())
+                .collect::<Vec<u8>>()
+                .as_slice(),
+        );
         // element 1: "c" + NUL (2 chars)
         bytes.extend_from_slice(&2u32.to_le_bytes());
-        bytes.extend_from_slice("c\0".encode_utf16().flat_map(|u| u.to_le_bytes()).collect::<Vec<u8>>().as_slice());
+        bytes.extend_from_slice(
+            "c\0"
+                .encode_utf16()
+                .flat_map(|u| u.to_le_bytes())
+                .collect::<Vec<u8>>()
+                .as_slice(),
+        );
 
         match read(&bytes, CodePage::Absent) {
             PropertyValue::Vector(values) => {
@@ -327,7 +386,9 @@ mod tests {
                 assert_eq!(values.len(), 2);
                 for v in values {
                     match v {
-                        PropertyValue::Unsupported { raw, .. } => assert!(raw.len() <= UNSUPPORTED_RAW_PREVIEW),
+                        PropertyValue::Unsupported { raw, .. } => {
+                            assert!(raw.len() <= UNSUPPORTED_RAW_PREVIEW)
+                        }
                         other => panic!("expected Unsupported, got {other:?}"),
                     }
                 }

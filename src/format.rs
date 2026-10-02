@@ -79,22 +79,55 @@ pub struct FormatIdentity {
 /// against a well-known ProgID's published CLSID.
 const KNOWN_CLSIDS: &[([u8; 16], OleFormat)] = &[
     // Word.Document.8 -- {00020906-0000-0000-C000-000000000046}
-    ([0x06, 0x09, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0xC0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x46], OleFormat::Word97),
+    (
+        [
+            0x06, 0x09, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0xC0, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x46,
+        ],
+        OleFormat::Word97,
+    ),
     // Excel.Sheet.8 -- {00020820-0000-0000-C000-000000000046}
-    ([0x20, 0x08, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0xC0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x46], OleFormat::Excel97),
+    (
+        [
+            0x20, 0x08, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0xC0, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x46,
+        ],
+        OleFormat::Excel97,
+    ),
     // PowerPoint 97 presentation -- {64818D10-4F9B-11CF-86EA-00AA00B929E8}
-    ([0x10, 0x8D, 0x81, 0x64, 0x9B, 0x4F, 0xCF, 0x11, 0x86, 0xEA, 0x00, 0xAA, 0x00, 0xB9, 0x29, 0xE8], OleFormat::PowerPoint97),
+    (
+        [
+            0x10, 0x8D, 0x81, 0x64, 0x9B, 0x4F, 0xCF, 0x11, 0x86, 0xEA, 0x00, 0xAA, 0x00, 0xB9,
+            0x29, 0xE8,
+        ],
+        OleFormat::PowerPoint97,
+    ),
     // Windows Installer Package -- {000C1084-0000-0000-C000-000000000046}. Confirmed against
     // this crate's own MSI fixture in `tests/msi_fixture.rs`.
-    ([0x84, 0x10, 0x0C, 0x00, 0x00, 0x00, 0x00, 0x00, 0xC0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x46], OleFormat::Installer),
+    (
+        [
+            0x84, 0x10, 0x0C, 0x00, 0x00, 0x00, 0x00, 0x00, 0xC0, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x46,
+        ],
+        OleFormat::Installer,
+    ),
     // Outlook IPM.Note message -- {00020D0B-0000-0000-C000-000000000046}
-    ([0x0B, 0x0D, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0xC0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x46], OleFormat::OutlookMessage),
+    (
+        [
+            0x0B, 0x0D, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0xC0, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x46,
+        ],
+        OleFormat::OutlookMessage,
+    ),
 ];
 
 /// Resolves [`OleFormat`] from the root storage entry's CLSID plus a list of this container's
 /// top-level stream names (unqualified, i.e. the leaf name of each path with no `/` in it).
 pub fn identify(root: &DirectoryEntry, top_level_streams: &[&str]) -> FormatIdentity {
-    let from_clsid = KNOWN_CLSIDS.iter().find(|(clsid, _)| *clsid == root.clsid).map(|&(_, f)| f);
+    let from_clsid = KNOWN_CLSIDS
+        .iter()
+        .find(|(clsid, _)| *clsid == root.clsid)
+        .map(|&(_, f)| f);
     let from_streams = identify_by_streams(top_level_streams);
 
     let (format, evidence) = match (from_clsid, from_streams) {
@@ -102,9 +135,15 @@ pub fn identify(root: &DirectoryEntry, top_level_streams: &[&str]) -> FormatIden
         (None, Some(f)) => (f, FormatEvidence::StreamName),
         (None, None) => (OleFormat::Unknown, FormatEvidence::None),
     };
-    let clsid_conflicts_with_streams = matches!((from_clsid, from_streams), (Some(a), Some(b)) if a != b);
+    let clsid_conflicts_with_streams =
+        matches!((from_clsid, from_streams), (Some(a), Some(b)) if a != b);
 
-    FormatIdentity { format, evidence, clsid: root.clsid_string(), clsid_conflicts_with_streams }
+    FormatIdentity {
+        format,
+        evidence,
+        clsid: root.clsid_string(),
+        clsid_conflicts_with_streams,
+    }
 }
 
 fn identify_by_streams(top_level_streams: &[&str]) -> Option<OleFormat> {
@@ -112,7 +151,10 @@ fn identify_by_streams(top_level_streams: &[&str]) -> Option<OleFormat> {
     // the marker is part of the name, and none of the streams matched below use one.
     if top_level_streams.contains(&"WordDocument") {
         Some(OleFormat::Word97)
-    } else if top_level_streams.iter().any(|&s| s == "Workbook" || s == "Book") {
+    } else if top_level_streams
+        .iter()
+        .any(|&s| s == "Workbook" || s == "Book")
+    {
         Some(OleFormat::Excel97)
     } else if top_level_streams.contains(&"PowerPoint Document") {
         Some(OleFormat::PowerPoint97)
@@ -172,7 +214,11 @@ mod tests {
         // Excel CLSID, but a Word-shaped stream layout.
         let root = root_with_clsid(KNOWN_CLSIDS[1].0);
         let id = identify(&root, &["WordDocument"]);
-        assert_eq!(id.format, OleFormat::Excel97, "CLSID wins when it matches a known class");
+        assert_eq!(
+            id.format,
+            OleFormat::Excel97,
+            "CLSID wins when it matches a known class"
+        );
         assert!(id.clsid_conflicts_with_streams);
     }
 

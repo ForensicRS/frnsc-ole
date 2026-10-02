@@ -6,8 +6,8 @@
 //! rejected outright (`ForensicError`) rather than silently treated as 4096, which is what the
 //! very first version of this parser used to do.
 
-use forensic_rs::{ensure_format, ensure_min_length};
 use forensic_rs::prelude::*;
+use forensic_rs::{ensure_format, ensure_min_length};
 
 use crate::consts::{HEADER_DIFAT_ENTRIES, HEADER_SIZE, OLE_SIGNATURE};
 
@@ -33,7 +33,11 @@ pub(crate) struct OleHeaderRaw {
 impl FromBytes for OleHeaderRaw {
     fn from_bytes(reader: &mut ByteReader) -> ForensicResult<Self> {
         let signature = reader.read_fixed::<8>()?;
-        ensure_format!(signature == OLE_SIGNATURE, "ole_header", "invalid OLE/CFBF signature");
+        ensure_format!(
+            signature == OLE_SIGNATURE,
+            "ole_header",
+            "invalid OLE/CFBF signature"
+        );
         let _clsid = reader.read_fixed::<16>()?;
         let minor_version = reader.read_u16_le()?;
         let major_version = reader.read_u16_le()?;

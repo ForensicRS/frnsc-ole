@@ -49,7 +49,11 @@ impl FormatFactory for OleFileSystemFactory {
         crate::consts::CFBF_EXTENSIONS
     }
 
-    fn probe(&self, file: &mut dyn VirtualFile, ctx: &MountContext<'_>) -> ForensicResult<ProbeScore> {
+    fn probe(
+        &self,
+        file: &mut dyn VirtualFile,
+        ctx: &MountContext<'_>,
+    ) -> ForensicResult<ProbeScore> {
         probe_cfbf(file, ctx)
     }
 
@@ -84,7 +88,11 @@ impl FormatFactory for OleFormatFactory {
         crate::consts::CFBF_EXTENSIONS
     }
 
-    fn probe(&self, file: &mut dyn VirtualFile, ctx: &MountContext<'_>) -> ForensicResult<ProbeScore> {
+    fn probe(
+        &self,
+        file: &mut dyn VirtualFile,
+        ctx: &MountContext<'_>,
+    ) -> ForensicResult<ProbeScore> {
         probe_cfbf(file, ctx)
     }
 
@@ -97,7 +105,9 @@ impl FormatFactory for OleFormatFactory {
 fn too_large(observed: u64, limit: u64) -> ForensicError {
     ForensicError::other(
         "frnsc-ole",
-        format!("CFBF container is {observed} bytes, exceeding the {limit}-byte in-memory materialization limit"),
+        format!(
+            "CFBF container is {observed} bytes, exceeding the {limit}-byte in-memory materialization limit"
+        ),
     )
 }
 
@@ -108,8 +118,9 @@ fn too_large(observed: u64, limit: u64) -> ForensicError {
 fn probe_cfbf(file: &mut dyn VirtualFile, _ctx: &MountContext<'_>) -> ForensicResult<ProbeScore> {
     let initial_pos = file.stream_position().unwrap_or(0);
     let result = probe_inner(file);
-    file.seek(SeekFrom::Start(initial_pos))
-        .map_err(|e| ForensicError::io_error_with_source(e, "restoring stream position after probing"))?;
+    file.seek(SeekFrom::Start(initial_pos)).map_err(|e| {
+        ForensicError::io_error_with_source(e, "restoring stream position after probing")
+    })?;
     result
 }
 
@@ -124,7 +135,11 @@ fn probe_inner(file: &mut dyn VirtualFile) -> ForensicResult<ProbeScore> {
     }
     // Magic alone can collide; a header that also passes full structural validation
     // (byte order, sector shift, mini-sector shift, the v3/512 cross-check) is unambiguous.
-    Ok(if Header::parse(&head).is_ok() { ProbeScore::Exact } else { ProbeScore::Strong })
+    Ok(if Header::parse(&head).is_ok() {
+        ProbeScore::Exact
+    } else {
+        ProbeScore::Strong
+    })
 }
 
 /// Reads the whole file (bounded by [`Limits::materialize_in_memory_limit`]) and parses it into
@@ -206,8 +221,9 @@ mod tests {
 
     #[test]
     fn probe_scores_no_on_a_non_ole_file() {
-        let fs: Arc<dyn FileSystem> =
-            StdArc::new(InMemoryVirtualFileSystem::new().with_file("not_ole", b"just some bytes".to_vec()));
+        let fs: Arc<dyn FileSystem> = StdArc::new(
+            InMemoryVirtualFileSystem::new().with_file("not_ole", b"just some bytes".to_vec()),
+        );
         let mut file = fs.open(FPath::new("not_ole")).unwrap();
         let locator = EvidenceLocator::root().push(LocatorSegment::Path(FPathBuf::new()));
         let limits = Limits::default();
@@ -219,14 +235,19 @@ mod tests {
         let pos_before = file.stream_position().unwrap();
         let score = factory.probe(file.as_mut(), &ctx).unwrap();
         assert_eq!(ProbeScore::No, score);
-        assert_eq!(pos_before, file.stream_position().unwrap(), "probe must restore stream position");
+        assert_eq!(
+            pos_before,
+            file.stream_position().unwrap(),
+            "probe must restore stream position"
+        );
     }
 
     #[test]
     fn probe_scores_strong_on_the_magic_alone() {
         let mut bytes = OLE_SIGNATURE.to_vec();
         bytes.extend_from_slice(&[0u8; 504]); // pad to a full header of garbage past the magic
-        let fs: Arc<dyn FileSystem> = StdArc::new(InMemoryVirtualFileSystem::new().with_file("ole_file", bytes));
+        let fs: Arc<dyn FileSystem> =
+            StdArc::new(InMemoryVirtualFileSystem::new().with_file("ole_file", bytes));
         let mut file = fs.open(FPath::new("ole_file")).unwrap();
         let locator = EvidenceLocator::root().push(LocatorSegment::Path(FPathBuf::new()));
         let limits = Limits::default();
@@ -241,8 +262,9 @@ mod tests {
 
     #[test]
     fn probe_scores_exact_on_a_structurally_valid_header() {
-        let fs: Arc<dyn FileSystem> =
-            StdArc::new(InMemoryVirtualFileSystem::new().with_file("ole_file", valid_header_bytes()));
+        let fs: Arc<dyn FileSystem> = StdArc::new(
+            InMemoryVirtualFileSystem::new().with_file("ole_file", valid_header_bytes()),
+        );
         let mut file = fs.open(FPath::new("ole_file")).unwrap();
         let locator = EvidenceLocator::root().push(LocatorSegment::Path(FPathBuf::new()));
         let limits = Limits::default();
@@ -254,13 +276,18 @@ mod tests {
         let pos_before = file.stream_position().unwrap();
         let score = factory.probe(file.as_mut(), &ctx).unwrap();
         assert_eq!(ProbeScore::Exact, score);
-        assert_eq!(pos_before, file.stream_position().unwrap(), "probe must restore stream position");
+        assert_eq!(
+            pos_before,
+            file.stream_position().unwrap(),
+            "probe must restore stream position"
+        );
     }
 
     #[test]
     fn mount_yields_a_structured_object_with_no_streams_for_a_minimal_file() {
         let bytes = crate::ole::tests_support::minimal_ole_bytes();
-        let fs: Arc<dyn FileSystem> = StdArc::new(InMemoryVirtualFileSystem::new().with_file("ole_file", bytes));
+        let fs: Arc<dyn FileSystem> =
+            StdArc::new(InMemoryVirtualFileSystem::new().with_file("ole_file", bytes));
         let file = fs.open(FPath::new("ole_file")).unwrap();
         let locator = EvidenceLocator::root().push(LocatorSegment::Path(FPathBuf::new()));
         let limits = Limits::default();
@@ -270,17 +297,24 @@ mod tests {
 
         let factory = OleFormatFactory::new();
         let mounted = factory.mount(file, &ctx).unwrap();
-        let object = mounted.as_object().expect("factory declares MountKind::Object");
+        let object = mounted
+            .as_object()
+            .expect("factory declares MountKind::Object");
         assert!(object.children().unwrap().is_empty());
     }
 
     #[test]
     fn mount_refuses_a_file_larger_than_the_memory_limit() {
         let bytes = crate::ole::tests_support::minimal_ole_bytes();
-        let fs: Arc<dyn FileSystem> = StdArc::new(InMemoryVirtualFileSystem::new().with_file("ole_file", bytes));
+        let fs: Arc<dyn FileSystem> =
+            StdArc::new(InMemoryVirtualFileSystem::new().with_file("ole_file", bytes));
         let file = fs.open(FPath::new("ole_file")).unwrap();
-        let locator = EvidenceLocator::root().push(LocatorSegment::Path(FPathBuf::from("ole_file")));
-        let limits = Limits { materialize_in_memory_limit: 16, ..Limits::default() };
+        let locator =
+            EvidenceLocator::root().push(LocatorSegment::Path(FPathBuf::from("ole_file")));
+        let limits = Limits {
+            materialize_in_memory_limit: 16,
+            ..Limits::default()
+        };
         let spill = MemorySpillStore::default();
         let cancellation = forensic_rs::bridge::CancellationToken::default();
         let ctx = probe_ctx(&fs, &locator, &limits, &spill, &cancellation);
@@ -290,13 +324,17 @@ mod tests {
             Ok(_) => panic!("expected mount to refuse an oversized file"),
             Err(e) => e.to_string(),
         };
-        assert!(message.contains("16"), "error should name the limit: {message}");
+        assert!(
+            message.contains("16"),
+            "error should name the limit: {message}"
+        );
     }
 
     #[test]
     fn filesystem_factory_yields_a_walkable_filesystem() {
         let bytes = crate::ole::tests_support::minimal_ole_bytes();
-        let fs: Arc<dyn FileSystem> = StdArc::new(InMemoryVirtualFileSystem::new().with_file("ole_file", bytes));
+        let fs: Arc<dyn FileSystem> =
+            StdArc::new(InMemoryVirtualFileSystem::new().with_file("ole_file", bytes));
         let file = fs.open(FPath::new("ole_file")).unwrap();
         let locator = EvidenceLocator::root().push(LocatorSegment::Path(FPathBuf::new()));
         let limits = Limits::default();
@@ -307,14 +345,17 @@ mod tests {
         let factory = OleFileSystemFactory::new();
         assert_eq!(factory.yields(), MountKind::FileSystem);
         let mounted = factory.mount(file, &ctx).unwrap();
-        let inner_fs = mounted.as_file_system().expect("factory declares MountKind::FileSystem");
+        let inner_fs = mounted
+            .as_file_system()
+            .expect("factory declares MountKind::FileSystem");
         assert_eq!(inner_fs.read_dir(FPath::new("")).unwrap().count(), 0);
     }
 
     #[test]
     fn both_factories_score_the_same_bytes_identically() {
         let bytes = valid_header_bytes();
-        let fs: Arc<dyn FileSystem> = StdArc::new(InMemoryVirtualFileSystem::new().with_file("ole_file", bytes));
+        let fs: Arc<dyn FileSystem> =
+            StdArc::new(InMemoryVirtualFileSystem::new().with_file("ole_file", bytes));
         let locator = EvidenceLocator::root().push(LocatorSegment::Path(FPathBuf::new()));
         let limits = Limits::default();
         let spill = MemorySpillStore::default();
@@ -346,20 +387,31 @@ mod tests {
         let cancellation = forensic_rs::bridge::CancellationToken::default();
 
         for reversed in [false, true] {
-            let fs: Arc<dyn FileSystem> = StdArc::new(InMemoryVirtualFileSystem::new().with_file("ole_file", bytes.clone()));
+            let fs: Arc<dyn FileSystem> =
+                StdArc::new(InMemoryVirtualFileSystem::new().with_file("ole_file", bytes.clone()));
             let file = fs.open(FPath::new("ole_file")).unwrap();
-            let locator = EvidenceLocator::root().push(LocatorSegment::Path(FPathBuf::from("ole_file")));
+            let locator =
+                EvidenceLocator::root().push(LocatorSegment::Path(FPathBuf::from("ole_file")));
 
             let mut builder = MountResolver::builder();
             builder = if reversed {
-                builder.factory(Arc::new(OleFormatFactory::new())).factory(Arc::new(OleFileSystemFactory::new()))
+                builder
+                    .factory(Arc::new(OleFormatFactory::new()))
+                    .factory(Arc::new(OleFileSystemFactory::new()))
             } else {
-                builder.factory(Arc::new(OleFileSystemFactory::new())).factory(Arc::new(OleFormatFactory::new()))
+                builder
+                    .factory(Arc::new(OleFileSystemFactory::new()))
+                    .factory(Arc::new(OleFormatFactory::new()))
             };
             let resolver = builder.build();
 
-            let mounted = resolver.resolve(&fs, &locator, file, None, &cancellation).unwrap();
-            assert!(mounted.as_file_system().is_some(), "reversed={reversed}: expected the FileSystem mount to win");
+            let mounted = resolver
+                .resolve(&fs, &locator, file, None, &cancellation)
+                .unwrap();
+            assert!(
+                mounted.as_file_system().is_some(),
+                "reversed={reversed}: expected the FileSystem mount to win"
+            );
         }
     }
 }

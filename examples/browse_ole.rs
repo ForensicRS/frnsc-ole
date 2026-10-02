@@ -12,7 +12,9 @@ use forensic_rs::prelude::*;
 use frnsc_ole::{OleFile, OleFileSystem};
 
 fn main() {
-    let path = std::env::args().nth(1).unwrap_or_else(|| "artifacts/SampleDoc.doc".to_string());
+    let path = std::env::args()
+        .nth(1)
+        .unwrap_or_else(|| "artifacts/SampleDoc.doc".to_string());
     let data = match std::fs::read(&path) {
         Ok(data) => data,
         Err(e) => {
@@ -39,7 +41,11 @@ fn main() {
             Ok(entry) => {
                 let depth = entry.path.as_str().matches('/').count();
                 let leaf = entry.path.file_name().unwrap_or(entry.path.as_str());
-                let kind = if entry.file_type == VFileType::Directory { "/" } else { "" };
+                let kind = if entry.file_type == VFileType::Directory {
+                    "/"
+                } else {
+                    ""
+                };
                 let size = entry.metadata.as_ref().map(|m| m.size).unwrap_or(0);
                 println!("{}{leaf}{kind}  ({size} bytes)", "  ".repeat(depth));
             }
@@ -63,7 +69,10 @@ fn main() {
     if !anomalies.is_empty() {
         println!("\n-- name anomalies (excluded from the FileSystem surface) --");
         for (idx, entry, anomaly) in anomalies {
-            println!("  [{idx}] {:?} name={:?} -> {anomaly:?}", entry.object_type, entry.name);
+            println!(
+                "  [{idx}] {:?} name={:?} -> {anomaly:?}",
+                entry.object_type, entry.name
+            );
         }
     }
 }

@@ -50,7 +50,9 @@ pub fn build_paths(entries: &[DirectoryEntry]) -> ForensicResult<BTreeMap<String
         if !visited.insert(node) {
             return Err(ForensicError::invalid_format(
                 "ole_directory",
-                format!("directory entry {node} is reachable more than once (cyclic or overlapping tree)"),
+                format!(
+                    "directory entry {node} is reachable more than once (cyclic or overlapping tree)"
+                ),
             ));
         }
 
@@ -86,7 +88,13 @@ pub fn build_paths(entries: &[DirectoryEntry]) -> ForensicResult<BTreeMap<String
 mod tests {
     use super::*;
 
-    fn entry(name: &str, object_type: ObjectType, left: u32, right: u32, child: u32) -> DirectoryEntry {
+    fn entry(
+        name: &str,
+        object_type: ObjectType,
+        left: u32,
+        right: u32,
+        child: u32,
+    ) -> DirectoryEntry {
         DirectoryEntry {
             name: name.to_string(),
             object_type,
@@ -139,18 +147,40 @@ mod tests {
 
     #[test]
     fn an_out_of_range_child_id_is_rejected() {
-        let entries = vec![entry("Root Entry", ObjectType::RootStorage, NOSTREAM, NOSTREAM, 99)];
+        let entries = vec![entry(
+            "Root Entry",
+            ObjectType::RootStorage,
+            NOSTREAM,
+            NOSTREAM,
+            99,
+        )];
         assert!(build_paths(&entries).is_err());
     }
 
     #[test]
     fn a_sibling_chain_resolves_without_recursing() {
         // Root -> child 1; 1's right sibling is 2, 2's right sibling is 3, ... a long chain.
-        let mut entries = vec![entry("Root Entry", ObjectType::RootStorage, NOSTREAM, NOSTREAM, 1)];
+        let mut entries = vec![entry(
+            "Root Entry",
+            ObjectType::RootStorage,
+            NOSTREAM,
+            NOSTREAM,
+            1,
+        )];
         let count = 10_000;
         for i in 0..count {
-            let right = if i + 1 < count { (i + 2) as u32 } else { NOSTREAM };
-            entries.push(entry(&format!("s{i}"), ObjectType::Stream, NOSTREAM, right, NOSTREAM));
+            let right = if i + 1 < count {
+                (i + 2) as u32
+            } else {
+                NOSTREAM
+            };
+            entries.push(entry(
+                &format!("s{i}"),
+                ObjectType::Stream,
+                NOSTREAM,
+                right,
+                NOSTREAM,
+            ));
         }
         let paths = build_paths(&entries).unwrap();
         assert_eq!(paths.len(), count);

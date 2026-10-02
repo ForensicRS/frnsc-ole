@@ -42,5 +42,6 @@ pub const NOSTREAM: u32 = 0xFFFFFFFF;
 /// files that can't possibly be this format. It is never authoritative — `probe` still checks
 /// the real magic bytes and header structure — so an unlisted extension only costs a caller
 /// using that hint a missed auto-descent, never a false positive.
-pub const CFBF_EXTENSIONS: &[&str] =
-    &["doc", "dot", "xls", "xlt", "xla", "ppt", "pps", "pot", "msi", "msp", "mst", "msg", "vsd"];
+pub const CFBF_EXTENSIONS: &[&str] = &[
+    "doc", "dot", "xls", "xlt", "xla", "ppt", "pps", "pot", "msi", "msp", "mst", "msg", "vsd",
+];

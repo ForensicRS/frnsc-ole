@@ -55,7 +55,11 @@ mod tests {
     fn flags_each_forbidden_character() {
         for &c in &FORBIDDEN {
             let name = format!("a{c}b");
-            assert_eq!(classify(&name), Some(NameAnomaly::ForbiddenCharacter(c)), "did not flag '{name}'");
+            assert_eq!(
+                classify(&name),
+                Some(NameAnomaly::ForbiddenCharacter(c)),
+                "did not flag '{name}'"
+            );
         }
     }
 

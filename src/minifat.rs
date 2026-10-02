@@ -18,22 +18,33 @@ pub fn build_mini_fat(data: &[u8], fat: &[u32], header: &Header) -> ForensicResu
         return Ok(Vec::new());
     };
     let bytes = read_stream_chain(data, fat, start, header.sector_size)?;
-    Ok(bytes.chunks_exact(4).map(|c| u32::from_le_bytes(c.try_into().unwrap())).collect())
+    Ok(bytes
+        .chunks_exact(4)
+        .map(|c| u32::from_le_bytes(c.try_into().unwrap()))
+        .collect())
 }
 
 /// Reads one mini sector's bytes directly out of the mini stream.
-fn read_mini_sector(mini_stream: &[u8], sector_num: u32, sector_size: usize) -> ForensicResult<&[u8]> {
+fn read_mini_sector(
+    mini_stream: &[u8],
+    sector_num: u32,
+    sector_size: usize,
+) -> ForensicResult<&[u8]> {
     let start = (sector_num as usize).saturating_mul(sector_size);
-    let end = start
-        .checked_add(sector_size)
-        .ok_or_else(|| ForensicError::invalid_format("ole_mini_sector", "mini sector offset overflow"))?;
+    let end = start.checked_add(sector_size).ok_or_else(|| {
+        ForensicError::invalid_format("ole_mini_sector", "mini sector offset overflow")
+    })?;
     ensure_buffer_range!(mini_stream, start, end);
     Ok(&mini_stream[start..end])
 }
 
 /// Reads a small stream's bytes by following its chain through the mini-FAT, inside the
 /// already-materialized mini stream.
-pub fn read_mini_chain(mini_stream: &[u8], mini_fat: &[u32], start_mini_sector: u32) -> ForensicResult<Vec<u8>> {
+pub fn read_mini_chain(
+    mini_stream: &[u8],
+    mini_fat: &[u32],
+    start_mini_sector: u32,
+) -> ForensicResult<Vec<u8>> {
     follow_chain(mini_fat, start_mini_sector, |sector_num| {
         read_mini_sector(mini_stream, sector_num, MINI_SECTOR_SIZE)
     })

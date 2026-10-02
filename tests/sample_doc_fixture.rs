@@ -38,7 +38,14 @@ fn parses_and_enumerates_all_streams() {
     assert_eq!(streams.len(), 8, "unexpected stream count: {streams:?}");
     // `CompObj`/`SummaryInformation`/`DocumentSummaryInformation` carry a leading 0x01/0x05
     // marker byte per [MS-CFB] 2.6.1 (same as `msi_fixture.rs`), so match on the suffix.
-    for expected in ["WordDocument", "1Table", "SummaryInformation", "DocumentSummaryInformation", "CompObj", "Data"] {
+    for expected in [
+        "WordDocument",
+        "1Table",
+        "SummaryInformation",
+        "DocumentSummaryInformation",
+        "CompObj",
+        "Data",
+    ] {
         assert!(
             streams.iter().any(|s| s.ends_with(expected)),
             "missing expected stream '{expected}' in {streams:?}"
@@ -100,8 +107,9 @@ fn missing_stream_is_an_error() {
 fn format_factory_mounts_it_as_a_structured_object() {
     let Some(bytes) = fixture_bytes() else { return };
 
-    let fs: std::sync::Arc<dyn FileSystem> =
-        std::sync::Arc::new(forensic_rs::prelude::testing::InMemoryVirtualFileSystem::new().with_file("doc", bytes));
+    let fs: std::sync::Arc<dyn FileSystem> = std::sync::Arc::new(
+        forensic_rs::prelude::testing::InMemoryVirtualFileSystem::new().with_file("doc", bytes),
+    );
     let mut file = fs.open(FPath::new("doc")).unwrap();
     let locator = EvidenceLocator::root().push(LocatorSegment::Path(FPathBuf::new()));
     let limits = Limits::default();
@@ -112,11 +120,16 @@ fn format_factory_mounts_it_as_a_structured_object() {
     let factory = OleFormatFactory::new();
     // A structurally valid header (this fixture's is) now probes as `Exact`, not just `Strong`
     // ("has the magic") -- see `factory.rs`'s `probe_inner`.
-    assert_eq!(factory.probe(file.as_mut(), &ctx).unwrap(), ProbeScore::Exact);
+    assert_eq!(
+        factory.probe(file.as_mut(), &ctx).unwrap(),
+        ProbeScore::Exact
+    );
 
     let file = fs.open(FPath::new("doc")).unwrap();
     let mounted = factory.mount(file, &ctx).unwrap();
-    let object = mounted.as_object().expect("factory declares MountKind::Object");
+    let object = mounted
+        .as_object()
+        .expect("factory declares MountKind::Object");
     // 8 streams + `MsoDataStore` + its one nested GUID-named substorage: storages are now
     // reachable `children()` entries too (as `MountKind::Object`), not just streams.
     let children = object.children().unwrap();

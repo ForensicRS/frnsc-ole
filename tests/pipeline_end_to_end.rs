@@ -24,7 +24,10 @@ fn disk_vfs() -> Option<Arc<dyn FileSystem>> {
         println!("SKIP: fixture '{}' unavailable", path.display());
         return None;
     }
-    Some(Arc::new(ChRootFileSystem::new(FIXTURE_DIR, Arc::new(StdVirtualFS::new()))))
+    Some(Arc::new(ChRootFileSystem::new(
+        FIXTURE_DIR,
+        Arc::new(StdVirtualFS::new()),
+    )))
 }
 
 struct NestedStreamReadingAnalyzer {
@@ -36,7 +39,12 @@ impl Analyzer for NestedStreamReadingAnalyzer {
     fn name(&self) -> &str {
         "nested_stream_reading"
     }
-    fn analyze(&mut self, _data: &ForensicData, context: &TriageContext, _out: &mut Vec<Finding>) -> ForensicResult<()> {
+    fn analyze(
+        &mut self,
+        _data: &ForensicData,
+        context: &TriageContext,
+        _out: &mut Vec<Finding>,
+    ) -> ForensicResult<()> {
         let Some(vfs) = context.sources().vfs() else {
             return Ok(());
         };
@@ -50,8 +58,15 @@ impl Analyzer for NestedStreamReadingAnalyzer {
         }
         Ok(())
     }
-    fn finalize(&mut self, _context: &TriageContext, _out: &mut Vec<Finding>) -> ForensicResult<()> {
-        assert!(self.reads > 0, "the analyzer never reached the nested stream through ctx.sources().vfs()");
+    fn finalize(
+        &mut self,
+        _context: &TriageContext,
+        _out: &mut Vec<Finding>,
+    ) -> ForensicResult<()> {
+        assert!(
+            self.reads > 0,
+            "the analyzer never reached the nested stream through ctx.sources().vfs()"
+        );
         Ok(())
     }
 }
@@ -76,7 +91,13 @@ impl TriageSink for RecordCollector {
 fn container_inventory_and_an_analyzer_both_reach_the_real_doc_through_one_transparent_vfs() {
     let Some(disk) = disk_vfs() else { return };
 
-    let resolver = Arc::new(MountResolver::builder().factories(vec![Arc::new(OleFileSystemFactory::new()) as Arc<dyn FormatFactory>]).build());
+    let resolver = Arc::new(
+        MountResolver::builder()
+            .factories(vec![
+                Arc::new(OleFileSystemFactory::new()) as Arc<dyn FormatFactory>
+            ])
+            .build(),
+    );
     // `DescentPolicy::default()` deliberately descends into nothing; `from_resolver` is what a
     // real caller uses to derive the extension allow-list from whatever factories are actually
     // registered (here, frnsc-ole's own CFBF_EXTENSIONS via `OleFileSystemFactory::extensions`).
@@ -107,20 +128,34 @@ fn container_inventory_and_an_analyzer_both_reach_the_real_doc_through_one_trans
     let sources = TriageSources::builder().vfs(vfs).build();
     let result = pipeline.run(&sources).unwrap();
 
-    assert!(result.errors.is_empty(), "unexpected errors: {:?}", result.errors);
+    assert!(
+        result.errors.is_empty(),
+        "unexpected errors: {:?}",
+        result.errors
+    );
 
     let records = collector.0.lock().unwrap();
-    assert!(!records.is_empty(), "ContainerInventoryParser produced no records for a real .doc fixture");
+    assert!(
+        !records.is_empty(),
+        "ContainerInventoryParser produced no records for a real .doc fixture"
+    );
 
     let mut record_types = std::collections::BTreeSet::new();
     for data in records.iter() {
         let confidence = data.confidence(&store);
-        assert_ne!(confidence, Confidence::Unknown, "every record must resolve to a real confidence");
+        assert_ne!(
+            confidence,
+            Confidence::Unknown,
+            "every record must resolve to a real confidence"
+        );
         if let Some(record_type) = data.field_as_str("container.record_type") {
             record_types.insert(record_type.to_string());
         }
     }
-    assert!(record_types.len() > 1, "expected more than one container.record_type, got {record_types:?}");
+    assert!(
+        record_types.len() > 1,
+        "expected more than one container.record_type, got {record_types:?}"
+    );
     assert!(record_types.contains(RECORD_TYPE_CONTAINER));
     assert!(record_types.contains(RECORD_TYPE_MEMBER));
 
@@ -130,6 +165,12 @@ fn container_inventory_and_an_analyzer_both_reach_the_real_doc_through_one_trans
         .iter()
         .find(|d| d.field_as_str("file.path") == Some(FIXTURE_NAME))
         .expect("a container record for SampleDoc.doc");
-    assert_eq!(container_record.field_as_str("container.record_type"), Some(RECORD_TYPE_CONTAINER));
-    assert_eq!(container_record.field_as_str("ole.document_type"), Some("word_document"));
+    assert_eq!(
+        container_record.field_as_str("container.record_type"),
+        Some(RECORD_TYPE_CONTAINER)
+    );
+    assert_eq!(
+        container_record.field_as_str("ole.document_type"),
+        Some("word_document")
+    );
 }

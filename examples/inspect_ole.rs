@@ -10,7 +10,9 @@ use forensic_rs::traits::format::StructuredObject;
 use frnsc_ole::{ObjectType, OleFile};
 
 fn main() {
-    let path = std::env::args().nth(1).unwrap_or_else(|| "artifacts/SampleDoc.doc".to_string());
+    let path = std::env::args()
+        .nth(1)
+        .unwrap_or_else(|| "artifacts/SampleDoc.doc".to_string());
     let data = match std::fs::read(&path) {
         Ok(data) => data,
         Err(e) => {
@@ -34,7 +36,11 @@ fn main() {
         "root CLSID: {}",
         ole.root_clsid().unwrap_or_else(|| "(none)".to_string())
     );
-    println!("streams: {}, storages: {}\n", ole.stream_count(), ole.storage_count());
+    println!(
+        "streams: {}, storages: {}\n",
+        ole.stream_count(),
+        ole.storage_count()
+    );
 
     println!("-- directory tree --");
     for (path, kind) in ole.paths() {
@@ -44,8 +50,14 @@ fn main() {
         match kind {
             ObjectType::Stream => {
                 let entry = ole.entry(path).expect("path came from ole.paths()");
-                let created = entry.created.map(|t| format!("{t:?}")).unwrap_or_else(|| "-".into());
-                let modified = entry.modified.map(|t| format!("{t:?}")).unwrap_or_else(|| "-".into());
+                let created = entry
+                    .created
+                    .map(|t| format!("{t:?}"))
+                    .unwrap_or_else(|| "-".into());
+                let modified = entry
+                    .modified
+                    .map(|t| format!("{t:?}"))
+                    .unwrap_or_else(|| "-".into());
                 println!(
                     "{indent}{leaf}  [{} bytes, created={created}, modified={modified}]",
                     entry.stream_size
@@ -59,7 +71,10 @@ fn main() {
     if !unallocated.is_empty() {
         println!("\n-- unallocated (deleted) directory slots --");
         for (idx, entry) in unallocated {
-            println!("  [{idx}] {:?} name={:?} size={}", entry.object_type, entry.name, entry.stream_size);
+            println!(
+                "  [{idx}] {:?} name={:?} size={}",
+                entry.object_type, entry.name, entry.stream_size
+            );
         }
     }
 

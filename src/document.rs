@@ -15,7 +15,10 @@
 
 use crate::directory::DirectoryEntry;
 use crate::format::{self, FormatIdentity};
-use crate::oleps::{self, DocumentSummaryInformation, MsiSummaryInformation, SummaryInformation, UserDefinedProperty};
+use crate::oleps::{
+    self, DocumentSummaryInformation, MsiSummaryInformation, SummaryInformation,
+    UserDefinedProperty,
+};
 use crate::source::CfbStreams;
 
 /// [MS-CFB] 2.6.1's leading marker bytes on certain well-known stream names (e.g.
@@ -29,7 +32,10 @@ fn strip_marker(name: &str) -> &str {
 
 /// Finds a top-level stream by name, ignoring any [MS-CFB] 2.6.1 marker byte.
 fn find_stream<'a>(top_level_streams: &[&'a str], want: &str) -> Option<&'a str> {
-    top_level_streams.iter().copied().find(|&name| strip_marker(name) == want)
+    top_level_streams
+        .iter()
+        .copied()
+        .find(|&name| strip_marker(name) == want)
 }
 
 /// The typed document view over one parsed CFBF container.
@@ -47,22 +53,38 @@ pub struct OleDocument {
 impl OleDocument {
     /// Builds the document view. `root` is the CFBF container's root directory entry;
     /// `top_level_streams` is every stream name directly under the root (unqualified, no `/`).
-    pub fn build(source: &impl CfbStreams, root: &DirectoryEntry, top_level_streams: &[&str]) -> Self {
+    pub fn build(
+        source: &impl CfbStreams,
+        root: &DirectoryEntry,
+        top_level_streams: &[&str],
+    ) -> Self {
         let mut warnings = Vec::new();
         let format = format::identify(root, top_level_streams);
 
         // Read the `\x05SummaryInformation` stream once and project it two ways (regular and
         // MSI-repurposed semantics) rather than reading and re-warning about it twice.
-        let summary_info_stream =
-            find_stream(top_level_streams, "SummaryInformation").and_then(|name| read_property_set(source, name, &mut warnings));
-        let summary_information = summary_info_stream.as_ref().and_then(|s| s.sections.first()).map(SummaryInformation::from_section);
-        let msi_summary_information = summary_info_stream.as_ref().and_then(|s| s.sections.first()).map(MsiSummaryInformation::from_section);
+        let summary_info_stream = find_stream(top_level_streams, "SummaryInformation")
+            .and_then(|name| read_property_set(source, name, &mut warnings));
+        let summary_information = summary_info_stream
+            .as_ref()
+            .and_then(|s| s.sections.first())
+            .map(SummaryInformation::from_section);
+        let msi_summary_information = summary_info_stream
+            .as_ref()
+            .and_then(|s| s.sections.first())
+            .map(MsiSummaryInformation::from_section);
 
-        let doc_summary_stream =
-            find_stream(top_level_streams, "DocumentSummaryInformation").and_then(|name| read_property_set(source, name, &mut warnings));
-        let document_summary_information = doc_summary_stream.as_ref().and_then(|s| s.sections.first()).map(DocumentSummaryInformation::from_section);
-        let user_defined_properties =
-            doc_summary_stream.as_ref().and_then(|s| s.sections.get(1)).map(|s| s.user_defined_properties()).unwrap_or_default();
+        let doc_summary_stream = find_stream(top_level_streams, "DocumentSummaryInformation")
+            .and_then(|name| read_property_set(source, name, &mut warnings));
+        let document_summary_information = doc_summary_stream
+            .as_ref()
+            .and_then(|s| s.sections.first())
+            .map(DocumentSummaryInformation::from_section);
+        let user_defined_properties = doc_summary_stream
+            .as_ref()
+            .and_then(|s| s.sections.get(1))
+            .map(|s| s.user_defined_properties())
+            .unwrap_or_default();
 
         Self {
             format,
@@ -116,7 +138,11 @@ impl OleDocument {
     }
 }
 
-fn read_property_set(source: &impl CfbStreams, name: &str, warnings: &mut Vec<String>) -> Option<oleps::PropertySetStream> {
+fn read_property_set(
+    source: &impl CfbStreams,
+    name: &str,
+    warnings: &mut Vec<String>,
+) -> Option<oleps::PropertySetStream> {
     let bytes = match source.stream(name) {
         Ok(bytes) => bytes,
         Err(e) => {
@@ -194,9 +220,13 @@ mod tests {
 
     #[test]
     fn builds_summary_information_from_the_well_known_stream() {
-        let streams = MapStreams::new().with("\u{5}SummaryInformation", summary_info_bytes("Hello"));
+        let streams =
+            MapStreams::new().with("\u{5}SummaryInformation", summary_info_bytes("Hello"));
         let doc = OleDocument::build(&streams, &root_entry(), &["\u{5}SummaryInformation"]);
-        assert_eq!(doc.summary_information().and_then(|s| s.title.clone()), Some("Hello".to_string()));
+        assert_eq!(
+            doc.summary_information().and_then(|s| s.title.clone()),
+            Some("Hello".to_string())
+        );
         assert!(doc.warnings().is_empty());
     }
 
@@ -207,7 +237,10 @@ mod tests {
         assert!(doc.summary_information().is_none());
         assert!(doc.document_summary_information().is_none());
         assert!(doc.user_defined_properties().is_empty());
-        assert!(doc.warnings().is_empty(), "an absent stream is not a warning-worthy failure");
+        assert!(
+            doc.warnings().is_empty(),
+            "an absent stream is not a warning-worthy failure"
+        );
     }
 
     #[test]
@@ -222,6 +255,9 @@ mod tests {
     fn encryption_defaults_to_not_checked_rather_than_claiming_clean() {
         let streams = MapStreams::new();
         let doc = OleDocument::build(&streams, &root_entry(), &[]);
-        assert!(matches!(doc.encryption(), crate::crypto::EncryptionState::NotChecked { .. }));
+        assert!(matches!(
+            doc.encryption(),
+            crate::crypto::EncryptionState::NotChecked { .. }
+        ));
     }
 }

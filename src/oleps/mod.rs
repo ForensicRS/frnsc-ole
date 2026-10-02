@@ -24,7 +24,7 @@ use forensic_rs::prelude::*;
 use forensic_rs::{ensure_buffer_range, ensure_format};
 
 use codepage::CodePage;
-use variant::{read_typed_value, AnsiString, PropertyValue};
+use variant::{AnsiString, PropertyValue, read_typed_value};
 
 pub use doc_summary::DocumentSummaryInformation;
 pub use summary::{DocSecurity, MsiSummaryInformation, SummaryInformation};
@@ -63,7 +63,9 @@ impl PropertySection {
     }
 
     pub fn text(&self, id: u32) -> Option<String> {
-        self.get(id).and_then(PropertyValue::as_str).map(str::to_string)
+        self.get(id)
+            .and_then(PropertyValue::as_str)
+            .map(str::to_string)
     }
 
     pub fn i32(&self, id: u32) -> Option<i32> {
@@ -96,7 +98,11 @@ impl PropertySection {
         self.properties
             .iter()
             .filter(|&(&id, _)| id != 1)
-            .map(|(&id, value)| UserDefinedProperty { id, name: self.dictionary.get(&id).cloned(), value: value.clone() })
+            .map(|(&id, value)| UserDefinedProperty {
+                id,
+                name: self.dictionary.get(&id).cloned(),
+                value: value.clone(),
+            })
             .collect()
     }
 }
@@ -107,12 +113,20 @@ const BYTE_ORDER_MARKER: u16 = 0xFFFE;
 pub fn parse(data: &[u8]) -> ForensicResult<PropertySetStream> {
     let mut reader = ByteReader::new(data);
     let byte_order = reader.read_u16_le()?;
-    ensure_format!(byte_order == BYTE_ORDER_MARKER, "ole_property_set", "invalid property set byte order marker");
+    ensure_format!(
+        byte_order == BYTE_ORDER_MARKER,
+        "ole_property_set",
+        "invalid property set byte order marker"
+    );
     let _version = reader.read_u16_le()?;
     let _system_identifier = reader.read_u32_le()?;
     let _clsid = reader.read_fixed::<16>()?;
     let num_sets = reader.read_u32_le()?;
-    ensure_format!(num_sets == 1 || num_sets == 2, "ole_property_set", "NumPropertySets must be 1 or 2");
+    ensure_format!(
+        num_sets == 1 || num_sets == 2,
+        "ole_property_set",
+        "NumPropertySets must be 1 or 2"
+    );
 
     let mut headers = Vec::with_capacity(num_sets as usize);
     for _ in 0..num_sets {
@@ -128,7 +142,11 @@ pub fn parse(data: &[u8]) -> ForensicResult<PropertySetStream> {
     Ok(PropertySetStream { sections })
 }
 
-fn parse_section(data: &[u8], fmtid: [u8; 16], section_start: usize) -> ForensicResult<PropertySection> {
+fn parse_section(
+    data: &[u8],
+    fmtid: [u8; 16],
+    section_start: usize,
+) -> ForensicResult<PropertySection> {
     ensure_buffer_range!(data, section_start, section_start + 8);
     let mut header = ByteReader::new(&data[section_start..]);
     let _size = header.read_u32_le()?;
@@ -162,7 +180,9 @@ fn parse_section(data: &[u8], fmtid: [u8; 16], section_start: usize) -> Forensic
         if id == 0 {
             continue; // the dictionary names properties; it is not one itself.
         }
-        let Some(abs) = section_start.checked_add(rel_offset as usize) else { continue };
+        let Some(abs) = section_start.checked_add(rel_offset as usize) else {
+            continue;
+        };
         let mut value_reader = ByteReader::new(data);
         if value_reader.seek_to(abs).is_err() {
             continue;
@@ -174,7 +194,12 @@ fn parse_section(data: &[u8], fmtid: [u8; 16], section_start: usize) -> Forensic
         }
     }
 
-    Ok(PropertySection { fmtid, code_page, properties, dictionary })
+    Ok(PropertySection {
+        fmtid,
+        code_page,
+        properties,
+        dictionary,
+    })
 }
 
 fn read_code_page(data: &[u8], section_start: usize, rel_offset: u32) -> Option<CodePage> {
@@ -190,7 +215,11 @@ fn read_code_page(data: &[u8], section_start: usize, rel_offset: u32) -> Option<
 /// [MS-OLEPS] 2.17 `Dictionary`: a `Count`-prefixed list of `(PropertyIdentifier, Length, Name)`
 /// entries, each padded to a 4-byte boundary. Unicode-keyed (`CodePage::Unsupported(1200)`)
 /// dictionaries are out of scope and refused outright rather than misparsed.
-fn parse_dictionary(data: &[u8], start: usize, code_page: CodePage) -> ForensicResult<BTreeMap<u32, String>> {
+fn parse_dictionary(
+    data: &[u8],
+    start: usize,
+    code_page: CodePage,
+) -> ForensicResult<BTreeMap<u32, String>> {
     if matches!(code_page, CodePage::Unsupported(1200)) {
         return Err(ForensicError::missing_data(
             "ole_property_dictionary",
@@ -283,9 +312,9 @@ mod tests {
         // that reads sequentially instead of following the offset table would get this wrong.
         let fmtid = [0x11u8; 16];
         let props = vec![
-            (1u32, i2_bytes(1252)),        // PID_CODEPAGE
-            (4u32, lpstr_bytes("Sam")),     // PIDSI_AUTHOR ("Sam\0" = 4 bytes, odd un-padded case)
-            (2u32, lpstr_bytes("Title")),   // PIDSI_TITLE, appears after PID 4 on the wire
+            (1u32, i2_bytes(1252)),       // PID_CODEPAGE
+            (4u32, lpstr_bytes("Sam")),   // PIDSI_AUTHOR ("Sam\0" = 4 bytes, odd un-padded case)
+            (2u32, lpstr_bytes("Title")), // PIDSI_TITLE, appears after PID 4 on the wire
         ];
         let bytes = build_stream(fmtid, &props);
         let parsed = parse(&bytes).unwrap();
@@ -328,7 +357,10 @@ mod tests {
         let parsed = parse(&bytes).unwrap();
         let section = &parsed.sections[0];
         let named = section.user_defined_properties();
-        let custom = named.iter().find(|p| p.id == 2).expect("property 2 present");
+        let custom = named
+            .iter()
+            .find(|p| p.id == 2)
+            .expect("property 2 present");
         assert_eq!(custom.name.as_deref(), Some("Custom1"));
         assert_eq!(custom.value.as_str(), Some("value"));
     }

@@ -27,9 +27,11 @@ fn walk_visits_every_stream_and_every_one_round_trips() {
     let mut count = 0usize;
     for entry in fs.walk(FPath::new(""), &Default::default()) {
         let entry = entry.unwrap();
-        fs.metadata(&entry.path).unwrap_or_else(|e| panic!("metadata('{}') failed: {e}", entry.path));
+        fs.metadata(&entry.path)
+            .unwrap_or_else(|e| panic!("metadata('{}') failed: {e}", entry.path));
         if entry.file_type != VFileType::Directory {
-            fs.open(&entry.path).unwrap_or_else(|e| panic!("open('{}') failed: {e}", entry.path));
+            fs.open(&entry.path)
+                .unwrap_or_else(|e| panic!("open('{}') failed: {e}", entry.path));
         }
         count += 1;
     }
@@ -49,12 +51,22 @@ fn read_dir_count_matches_the_structured_object_view() {
 fn the_real_fixture_has_no_name_anomalies() {
     let Some(fs) = open_fixture() else { return };
     let anomalies: Vec<_> = fs.name_anomalies().collect();
-    assert!(anomalies.is_empty(), "unexpected name anomalies on real scrambled-Unicode MSI names: {anomalies:?}");
+    assert!(
+        anomalies.is_empty(),
+        "unexpected name anomalies on real scrambled-Unicode MSI names: {anomalies:?}"
+    );
 }
 
 #[test]
 fn root_attributes_identify_it_as_an_installer_package() {
     let Some(fs) = open_fixture() else { return };
-    let attrs = fs.as_attributes().unwrap().attributes(FPath::new("")).unwrap();
-    assert_eq!(attrs.get(&Text::Borrowed("ole.document_type")), Some(&Field::Text(Text::Borrowed("msi_package"))));
+    let attrs = fs
+        .as_attributes()
+        .unwrap()
+        .attributes(FPath::new(""))
+        .unwrap();
+    assert_eq!(
+        attrs.get(&Text::Borrowed("ole.document_type")),
+        Some(&Field::Text(Text::Borrowed("msi_package")))
+    );
 }
